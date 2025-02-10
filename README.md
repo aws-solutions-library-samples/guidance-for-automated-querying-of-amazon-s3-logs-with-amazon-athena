@@ -233,7 +233,7 @@ This will remove all resources created by the solution.
 <a name="10-feedback"></a>
 ## 10. Feedback
 
-To submit feature ideas and report bugs, use the [Issues section of the GitHub repository](issues) for this guidance
+To submit feature ideas and report bugs, use the [Issues section of the GitHub repository](https://github.com/aws-solutions-library-samples/guidance-for-automating-analysis-of-amazon-s3-logs-on-aws/issues) for this guidance
 
 <a name="11-license"></a>
 ## 11. License
