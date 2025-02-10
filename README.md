@@ -233,12 +233,12 @@ This will remove all resources created by the solution.
 <a name="10-feedback"></a>
 ## 10. Feedback
 
-To submit feature ideas and report bugs, use the [Issues section of the GitHub repository](issues/) for this guidance
+To submit feature ideas and report bugs, use the [Issues section of the GitHub repository](issues) for this guidance
 
 <a name="11-license"></a>
 ## 11. License
 
-This solution is licensed under the MIT-0 License. See the [LICENSE](LICENSE)file.
+This solution is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
 
 
 
