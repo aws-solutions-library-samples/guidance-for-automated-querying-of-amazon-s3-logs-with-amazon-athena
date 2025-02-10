@@ -1,215 +1,264 @@
-# Guidance Title (required)
+# ReadMe: S3 Log Analysis
 
-The Guidance title should be consistent with the title established first in Alchemy.
+# Guidance for Automated Querying of Amazon S3 Logs
 
-**Example:** *Guidance for Product Substitutions on AWS*
 
-This title correlates exactly to the Guidance it’s linked to, including its corresponding sample code repository. 
 
+## Table of Contents
 
-## Table of Contents (required)
+1. [Overview](#1-overview)
+2. [Key Features](#2-key-features)
+3. [Cost](#3-cost)
+4. [Prerequisites](#4-prerequisites)
+5. [Deployment Steps](#5-deployment-steps)
+6. [Deployment Validation](#6-deployment-validation)
+7. [Accessing the Query Results](#7-accessing-the-query-results)
+8. [Cleanup](#8-cleanup)
+9. [Troubleshooting, Guidance, Limitations and Additional Resources](#9-troubleshooting-guidance-limitations-and-additional-resources)
+10. [Feedback](#10-feedback)
+11. [License](#11-license)
+12. [Notices](#12-notices)
 
-List the top-level sections of the README template, along with a hyperlink to the specific section.
 
-### Required
+<a name="1-overview"></a>
+## 1. Overview
 
-1. [Overview](#overview-required)
-    - [Cost](#cost)
-2. [Prerequisites](#prerequisites-required)
-    - [Operating System](#operating-system-required)
-3. [Deployment Steps](#deployment-steps-required)
-4. [Deployment Validation](#deployment-validation-required)
-5. [Running the Guidance](#running-the-guidance-required)
-6. [Next Steps](#next-steps-required)
-7. [Cleanup](#cleanup-required)
+The S3 Log Query guidance provides an automated workflow to query [Amazon S3](https://aws.amazon.com/s3/) server access logs and [CloudTrail](https://aws.amazon.com/cloudtrail/)logs. This solution helps customers audit API requests made to their S3 buckets and objects, providing valuable insights for troubleshooting, security analysis, and support case deflection.
 
-***Optional***
 
-8. [FAQ, known issues, additional considerations, and limitations](#faq-known-issues-additional-considerations-and-limitations-optional)
-9. [Revisions](#revisions-optional)
-10. [Notices](#notices-optional)
-11. [Authors](#authors-optional)
+#### High Level workflow
 
-## Overview (required)
+![](assets/high-level.png)
 
-1. Provide a brief overview explaining the what, why, or how of your Guidance. You can answer any one of the following to help you write this:
+#### Architecture
 
-    - **Why did you build this Guidance?**
-    - **What problem does this Guidance solve?**
+![](assets/arch3.png)
 
-2. Include the architecture diagram image, as well as the steps explaining the high-level overview and flow of the architecture. 
-    - To add a screenshot, create an ‘assets/images’ folder in your repository and upload your screenshot to it. Then, using the relative file path, add it to your README. 
+<a name="2-key-features"></a>
+## 2. Key Features
 
-### Cost ( required )
+The solution supports the following key features:
 
-This section is for a high-level cost estimate. Think of a likely straightforward scenario with reasonable assumptions based on the problem the Guidance is trying to solve. Provide an in-depth cost breakdown table in this section below ( you should use AWS Pricing Calculator to generate cost breakdown ).
 
-Start this section with the following boilerplate text:
+* ****Auditing Accidental Deletions****:
 
-_You are responsible for the cost of the AWS services used while running this Guidance. As of <month> <year>, the cost for running this Guidance with the default settings in the <Default AWS Region (Most likely will be US East (N. Virginia)) > is approximately $<n.nn> per month for processing ( <nnnnn> records )._
+Checks who deleted an object, when, and the associated details (timestamp, IP address, IAM role).
+Identifies whether the objects were deleted by a manual DELETE API request or a Lifecycle expiration rule.
 
-Replace this amount with the approximate cost for running your Guidance in the default Region. This estimate should be per month and for processing/serving resonable number of requests/entities.
 
-Suggest you keep this boilerplate text:
-_We recommend creating a [Budget](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html) through [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/) to help manage costs. Prices are subject to change. For full details, refer to the pricing webpage for each AWS service used in this Guidance._
+* ****API Request Details (403 Access Denied)****:
 
-### Sample Cost Table ( required )
+Analyzes server access log events based on operation, time period, requestor, response, and other fields.
+Provides detailed information about API requests that resulted in 403 Access Denied errors.
 
-**Note : Once you have created a sample cost table using AWS Pricing Calculator, copy the cost breakdown to below table and upload a PDF of the cost estimation on BuilderSpace. Do not add the link to the pricing calculator in the ReadMe.**
+* ****Bucket-level Configuration Auditing****:
 
-The following table provides a sample cost breakdown for deploying this Guidance with the default parameters in the US East (N. Virginia) Region for one month.
+Tracks the history of a specific bucket, including when bucket versioning was suspended, bucket policy updates, Lifecycle rule changes, Replication configuration updates, Block Public Access settings changes, and encryption setting updates.
 
-| AWS service  | Dimensions | Cost [USD] |
-| ----------- | ------------ | ------------ |
-| Amazon API Gateway | 1,000,000 REST API calls per month  | $ 3.50month |
-| Amazon Cognito | 1,000 active users per month without advanced security feature | $ 0.00 |
+* ****Bucket Performance (5xx Errors)****:
 
-## Prerequisites (required)
+Checks the number of 5xx errors returned by Amazon S3 within a given time frame, categorized by requester and operation.
 
-### Operating System (required)
 
-- Talk about the base Operating System (OS) and environment that can be used to run or deploy this Guidance, such as *Mac, Linux, or Windows*. Include all installable packages or modules required for the deployment. 
-- By default, assume Amazon Linux 2/Amazon Linux 2023 AMI as the base environment. All packages that are not available by default in AMI must be listed out.  Include the specific version number of the package or module.
+* ****Networking****:
 
-**Example:**
-“These deployment instructions are optimized to best work on **<Amazon Linux 2 AMI>**.  Deployment in another OS may require additional steps.”
+Checks how clients are accessing Amazon S3 (via gateway endpoint, interface endpoint, or public network).
+Identifies the highest turnaround time for a specific time period, requestor, or operation.
 
-- Include install commands for packages, if applicable.
+* **Lifecycle Action Statistics**:
 
+Provides statistics of Amazon S3 lifecycle actions such as count of object transitions and expiration. 
 
-### Third-party tools (If applicable)
+* **Lifecycle Actions**:
 
-*List any installable third-party tools required for deployment.*
+Provides details of Amazon S3 lifecycle actions such as object transitions and expiration per object. 
 
 
-### AWS account requirements (If applicable)
+<a name="3-cost"></a>
+## 3. Cost
 
-*List out pre-requisites required on the AWS account if applicable, this includes enabling AWS regions, requiring ACM certificate.*
+There are costs associated with using this solution. The solution uses several AWS services, including:
 
-**Example:** “This deployment requires you have public ACM certificate available in your AWS account”
+* [Amazon S3](https://aws.amazon.com/s3/)
+* [AWS Lambda](https://aws.amazon.com/lambda/)
+* [Amazon Athena](https://aws.amazon.com/athena/)
+* [AWS Glue](https://aws.amazon.com/glue/)
+* [Amazon Simple Notification Service (SNS)](https://aws.amazon.com/sns/)
+* [AWS CloudFormation](https://aws.amazon.com/cloudformation/)
+* [AWS Identity and Access Management (IAM)](https://aws.amazon.com/iam/)
 
-**Example resources:**
-- ACM certificate 
-- DNS record
-- S3 bucket
-- VPC
-- IAM role with specific permissions
-- Enabling a Region or service etc.
+Please refer to the pricing pages of these services for detailed cost information. The actual cost will depend on the volume of logs processed and the frequency of analysis.
 
+<a name="4-prerequisites"></a>
+## 4. Prerequisites
 
-### aws cdk bootstrap (if sample code has aws-cdk)
+To use this solution, you need:
 
-<If using aws-cdk, include steps for account bootstrap for new cdk users.>
+* An AWS Account and an IAM role or user with appropriate permissions
+* S3 server access logs or CloudTrail logs configured for your S3 buckets
+* Basic knowledge of AWS CloudFormation
 
-**Example blurb:** “This Guidance uses aws-cdk. If you are using aws-cdk for first time, please perform the below bootstrapping....”
 
-### Service limits  (if applicable)
+<a name="5-deployment-steps"></a>
+## 5. Deployment Steps
 
-<Talk about any critical service limits that affect the regular functioning of the Guidance. If the Guidance requires service limit increase, include the service name, limit name and link to the service quotas page.>
+1. Download the CloudFormation template, for [server access log](deployment/support-tool-server-access-logs-latest.yaml) or for [Cloudtrail events](deployment/support-tool-cloudtrail-logs-latest.yaml), depending on your log type
+2. Log in to the AWS Management Console and navigate to the CloudFormation service.
+3. Choose "Create stack" and upload the template file.
+4. Fill in the stack parameters:
 
-### Supported Regions (if applicable)
+| Name       | Description |
+|:--------- |:------------ |
+|Stack name	| Any valid alphanumeric characters and hyphen |
+|YourS3LogBucket	| The bucket where your logs are stored	|
+|YourS3LogBucketPrefix	| Specify the prefix to limit the amount of data copied and reduce cost	|
+|YourProductionS3Bucket	| The name of the S3 bucket you want to analyze	|
+|YourS3LogType	| Choose between S3AccessLogs or CloudTrail	|
+|DebugDuration	| Specify how far back to analyze logs	|
+|AnalysisType	| Choose the type of analysis to to perform (e.g., AnonymousAccess, CreateBucket, DeleteBucket, PutBucket, DeleteObject, AccessDenied, ServiceError-5xx, etc.)	|
+|ContactEmail	|Email address for notifications	|
 
-<If the Guidance is built for specific AWS Regions, or if the services used in the Guidance do not support all Regions, please specify the Region this Guidance is best suited for>
+* Review and create the stack.
 
+Sample stack deployment for querying CloudTrails logs:
 
-## Deployment Steps (required)
+![](assets/stack-image-1.png) 
 
-Deployment steps must be numbered, comprehensive, and usable to customers at any level of AWS expertise. The steps must include the precise commands to run, and describe the action it performs.
 
-* All steps must be numbered.
-* If the step requires manual actions from the AWS console, include a screenshot if possible.
-* The steps must start with the following command to clone the repo. ```git clone xxxxxxx```
-* If applicable, provide instructions to create the Python virtual environment, and installing the packages using ```requirement.txt```.
-* If applicable, provide instructions to capture the deployed resource ARN or ID using the CLI command (recommended), or console action.
+<a name="6-deployment-validation"></a>
+## 6. Deployment Validation
 
- 
-**Example:**
+* Wait for the CloudFormation stack to reach the CREATE_COMPLETE status:
 
-1. Clone the repo using command ```git clone xxxxxxxxxx```
-2. cd to the repo folder ```cd <repo-name>```
-3. Install packages in requirements using command ```pip install requirement.txt```
-4. Edit content of **file-name** and replace **s3-bucket** with the bucket name in your account.
-5. Run this command to deploy the stack ```cdk deploy``` 
-6. Capture the domain name created by running this CLI command ```aws apigateway ............```
+![](assets/stack-image-2.png)
 
+* Check your email and confirm the subscription to the SNS topic.
 
+![](assets/sns-sub-1.png)
 
-## Deployment Validation  (required)
+![](assets/sns-confirmation.png)
 
-<Provide steps to validate a successful deployment, such as terminal output, verifying that the resource is created, status of the CloudFormation template, etc.>
+* An Amazon S3 Batch Operations copy Job is initiated by the solution to automatically start copying logs matching the selected date range to the solution Amazon S3 bucket 
 
+![](assets/batch-ops-copy-job.png)  
 
-**Examples:**
+* The stack creates multiple resources including an Amazon S3 bucket, logs from the customer provided logs bucket will be pied to the S3 bucket within the “support” prefix
 
-* Open CloudFormation console and verify the status of the template with the name starting with xxxxxx.
-* If deployment is successful, you should see an active database instance with the name starting with <xxxxx> in        the RDS console.
-*  Run the following CLI command to validate the deployment: ```aws cloudformation describe xxxxxxxxxxxxx```
+![](assets/s3-bucket-1.png)
 
+* The diagram below shows the newly copied logs from the source bucket.
 
+![](assets/ctrail-raw-logs.png)
 
-## Running the Guidance (required)
 
-<Provide instructions to run the Guidance with the sample data or input provided, and interpret the output received.> 
+* The solution will start analyzing logs and send a notification to the specified email address when the query starts and also when the results are ready.
+* You can also monitor the progress of the analysis by checking the CloudWatch Logs for the Lambda functions deployed by the solution.
+* You can monitor the progress of the Athena query from the Athena Management Console. Select “Query Editor”,  at the “Workgroup” drop-down, select the Workgroup created by the solution and then select the “Recent Queries” tab. A query in progress shows "Running" status.
 
-This section should include:
+![](assets/athena-query-1.png)
 
-* Guidance inputs
-* Commands to run
-* Expected output (provide screenshot if possible)
-* Output description
 
+<a name="7-accessing-the-query-results"></a>
+## 7. Accessing the Query Results
 
+You will get an email notification once the query results are ready, this will include the Amazon S3 path to the results location. To access the query results, please use either the Amazon S3 Management Console or using the AWS-CLI. An email notification is sent when the query completes with the full S3 path of the CSV result file, see below screenshot:
 
-## Next Steps (required)
+![](assets/sns-query-ready-location.png)
 
-Provide suggestions and recommendations about how customers can modify the parameters and the components of the Guidance to further enhance it according to their requirements.
+The results are in CSV format, so you can choose to download and review them manually on your desktop, share with [AWS Support team](https://docs.aws.amazon.com/awssupport/latest/user/getting-started.html) via a [Support Case](https://docs.aws.amazon.com/awssupport/latest/user/case-management.html) or analyze the results with your desired analysis tool. 
 
+For example to download the result data using AWS-CLI, you can use below command:
 
-## Cleanup (required)
 
-- Include detailed instructions, commands, and console actions to delete the deployed Guidance.
-- If the Guidance requires manual deletion of resources, such as the content of an S3 bucket, please specify.
+>$ aws s3 cp s3://s3-tool-1234567890-eu-west-2-sal-query-final-1/support/s3/processed/csv/5d62d987-b272-4564-aa2c-9cb3dc7302fe.csv .
 
+![](assets/download-query-with-aws-cli.png)
 
 
-## FAQ, known issues, additional considerations, and limitations (optional)
+You can also access the query result via the Amazon S3 Management Console, see full path below:
 
 
-**Known issues (optional)**
+![](assets/s3-bucket-query-result-location.png)
 
-<If there are common known issues, or errors that can occur during the Guidance deployment, describe the issue and resolution steps here>
 
 
-**Additional considerations (if applicable)**
+<a name="8-cleanup"></a>
+## 8. Cleanup
 
-<Include considerations the customer must know while using the Guidance, such as anti-patterns, or billing considerations.>
+To avoid ongoing costs, delete the CloudFormation stack when you're done:
 
-**Examples:**
+1. Go to the CloudFormation console.
+2. Select the stack you created.
+3. Choose "Delete" and confirm.
 
-- “This Guidance creates a public AWS bucket required for the use-case.”
-- “This Guidance created an Amazon SageMaker notebook that is billed per hour irrespective of usage.”
-- “This Guidance creates unauthenticated public API endpoints.”
+This will remove all resources created by the solution.
 
+<a name="9-troubleshooting-guidance-limitations-and-additional-resources"></a>
+## 9. Troubleshooting, Guidance, Limitations and Additional Resources
 
-Provide a link to the *GitHub issues page* for users to provide feedback.
+### Troubleshooting
 
+* If you don't receive email notifications, check your email spam folder and ensure you've confirmed the SNS subscription.
+* Check CloudWatch Logs for Lambda function logs if you encounter issues.
+* Ensure the S3 bucket where your logs are stored is accessible to the S3BatchOperations IAM roles created by the solution. If your objects are encrypted with Customer Managed KMS keys, please ensure you grant the solution IAM role the required permissions You can grant these required permissions before Batch Operations job status changes to active to avoid task failures. To see the ARN of the IAM role created by the solution, please goto the solution Stack, and select the “Outputs” tab. 
 
-**Example:** *“For any feedback, questions, or suggestions, please use the issues tab under this repo.”*
+![](assets/stack-image-output.png)
 
-## Revisions (optional)
+### Guidance
 
-Document all notable changes to this project.
+* If there are a lot of logs, it is possible that the Athena query can run longer than the [default DML query timeout](https://docs.aws.amazon.com/athena/latest/ug/service-limits.html) of 30 mins, please consider reducing the number of days analyzed or request for DML query timeout [limit increase](https://console.aws.amazon.com/servicequotas/home?region=us-east-1#!/services/athena/quotas)
+* Consider running the analysis on a periodic schedule (e.g., weekly or monthly) to stay on top of your S3 activity.
+* Review the Athena queries in the solution to understand the analysis being performed and customize them as needed.
 
-Consider formatting this section based on Keep a Changelog, and adhering to Semantic Versioning.
+### Limitations
 
-## Notices (optional)
+* The solution is designed to work with S3 server access logs or CloudTrail logs. Other log formats are not supported.
+* There may be a delay between log generation and availability for analysis.
+* The solutions has a maximum predefined 90 days at the “Specify how long ago the issue started” stack parameter.
+* The solution does not provide real-time monitoring or alerting. It's designed for historical analysis and reporting.
 
-Include a legal disclaimer
+### Additional Resources
 
-**Example:**
-*Customers are responsible for making their own independent assessment of the information in this Guidance. This Guidance: (a) is for informational purposes only, (b) represents AWS current product offerings and practices, which are subject to change without notice, and (c) does not create any commitments or assurances from AWS and its affiliates, suppliers or licensors. AWS products or services are provided “as is” without warranties, representations, or conditions of any kind, whether express or implied. AWS responsibilities and liabilities to its customers are controlled by AWS agreements, and this Guidance is not part of, nor does it modify, any agreement between AWS and its customers.*
+* [Amazon S3 Server Access Logging](https://docs.aws.amazon.com/AmazonS3/latest/dev/ServerLogs.html)
+* [AWS CloudTrail](https://aws.amazon.com/cloudtrail/)
+* [Amazon Athena User Guide](https://docs.aws.amazon.com/athena/latest/ug/what-is.html)
+* [AWS Glue Developer Guide](https://docs.aws.amazon.com/glue/latest/dg/what-is-glue.html)
+* [AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/latest/dg/welcome.html)
+* [Amazon Simple Notification Service (SNS) Developer Guide](https://docs.aws.amazon.com/sns/latest/dg/welcome.html)
+* [Amazon S3 Batch Operations](https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops.html)
+* [Amazon S3 User Guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
+* [AWS Identity and Access Management (IAM) User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/introduction.html)
 
 
-## Authors (optional)
+<a name="10-feedback"></a>
+## 10. Feedback
 
-Name of code contributors
+To submit feature ideas and report bugs, use the [Issues section of the GitHub repository](issues/) for this guidance
+
+<a name="11-license"></a>
+## 11. License
+
+This solution is licensed under the MIT-0 License. See the LIC
+
+
+
+<a name="12-notices"></a>
+## 12. Notices
+
+This document is provided for informational purposes only. It represents current AWS product offerings and practices as of the date of issue of this document, which are subject to change without notice. Customers are responsible for making their own independent assessment of the information in this document and any use of AWS products or services, each of which is provided "as is" without warranty of any kind, whether expressed or implied. This document does not create any warranties, representations, contractual commitments, conditions, or assurances from AWS, its affiliates, suppliers, or licensors. The responsibilities and liabilities of AWS to its customers are controlled by AWS agreements, and this document is not part of, nor does it modify, any agreement between AWS and its customers.
+
+The software included with this guidance is licensed under the MIT License, version 2.0 (the "License"). ermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+

@@ -1,0 +1,2156 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS Support Troubleshooting for Amazon S3 - Cloudtrail Data Event Logs
+Metadata:
+  Version: '1.0.0'
+  License:
+    Description: >-
+      'MIT No Attribution
+
+      Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+      Permission is hereby granted, free of charge, to any person obtaining a copy of
+      this software and associated documentation files (the "Software"), to deal in
+      the Software without restriction, including without limitation the rights to
+      use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+      the Software, and to permit persons to whom the Software is furnished to do so.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+      FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+      COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+      IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+      CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.'
+
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+
+      -
+        Label:
+          default: "Your Amazon S3 Bucket Log Location. Please deploy this stack in same AWS Region as the S3 bucket"
+        Parameters:
+          - YourS3LogBucket
+          - YourS3LogBucketPrefix
+          
+      -
+        Label:
+          default: "Amazon S3 Log Type"
+        Parameters:
+          - YourS3LogType
+
+      -
+        Label:
+          default: "Troubleshooting, Analysis and Notification"
+        Parameters:
+          - DebugDuration
+          - AnalysisType
+          - ContactEmail
+
+      -
+        Label:
+          default: "Your Production Amazon S3 Bucket name"
+        Parameters:
+          - YourProductionS3Bucket          
+          
+
+  
+          
+    ParameterLabels:
+      YourS3LogBucket:
+        default: "Your Amazon S3 bucket Where your Cloudtrail Logs are delivered. If your logs has a CMK-KMS encryption, please read the Readme on GitHub to grant the required permissions"
+      YourS3LogBucketPrefix:
+        default: "The prefix in your Amazon S3 Log bucket where logs are delivered. Include a trailing / to limit to a prefix/folder"
+      YourProductionS3Bucket:
+        default: "Your Production Amazon S3 bucket, if specified, it will be used in the Athena Queries. Leave blank to return results for all your S3 buckets"      
+      YourS3LogType:
+        default: "The type of Amazon S3 Logs you have configured, Cloudtrail data events for S3"                                
+      DebugDuration:
+        default: Specify how long ago the issue started.
+      AnalysisType:
+        default: Specify what you want to analyze from the logs includes Create and Delete Bucket, Object Deletion, Anonymous Access and Access Denied  
+      ContactEmail:
+        default: "Email Address to send analysis completion notifications"        
+
+
+
+
+Parameters:
+
+  YourProductionS3Bucket:
+    Type: String
+    AllowedPattern: '^(|[a-z0-9.-]{3,63})$'
+    ConstraintDescription: Bucket name must contain only lowercase letters, numbers, periods (.), and dashes (-). Visit Amazon S3 User Guide 'https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html' 
+
+
+
+  YourS3LogBucket:
+    Type: String
+    AllowedPattern: '^[a-z0-9.-]{3,63}$'
+    ConstraintDescription: Bucket name must contain only lowercase letters, numbers, periods (.), and dashes (-). Visit Amazon S3 User Guide 'https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html' 
+
+
+  YourS3LogBucketPrefix:
+    Type: String
+    Description: Filtering by prefix reduces S3 API costs incurred by the solution
+    MaxLength: 255
+    MinLength: 6
+    Default: 'AWSLogs/{YOUR-AWS-ACCOUNT-ID}/CloudTrail/{AWS-REGION}/'
+    ConstraintDescription: Please specify a Valid prefix in your Cloudtrail logs bucket. Filtering by prefix reduces S3 API costs incurred by the solution
+
+
+  YourS3LogType:
+    Type: String
+    AllowedValues:
+         - CloudTrail      
+    Default: CloudTrail     
+
+  ContactEmail:
+    Type: String
+    MinLength: 5
+    MaxLength: 150         
+
+
+  AnalysisType:
+    Type: String
+    AllowedValues:
+         - CreateBucket
+         - DeleteBucket-*
+         - PutBucket-*
+         - DeleteObject-*
+         - AccessDenied
+         - AnonymousAccess 
+
+
+  DebugDuration:
+    Type: String
+    Default: 3
+    AllowedValues:
+         - 3
+         - 7
+         - 14
+         - 21
+         - 30
+         - 60
+         - 90
+
+
+Conditions:
+
+  UseCloudtrailLogs: !Equals 
+    - !Ref YourS3LogType 
+    - CloudTrail    
+
+
+Mappings:
+  ManifestBucketinfo:
+    manifest:
+      manifestprefix: batch-ops-manifest/copy
+      csvnoversionid: restore-and-copy/csv-manifest/no-version-id/
+      csvwithversionid: restore-and-copy/csv-manifest/with-version-id/
+    batchopsreport:
+      restorejob: batch-ops-report/restore
+      copyjob: batch-ops-report/copy
+
+
+  Bucket:
+    Parameters:
+      s3accesslogcopypath: 'support/s3/accesslog'
+      cloudtraillogcopypath: 'support/s3/cloudtraillog'      
+      csvforsupport: 'support/s3/processed/csv/'
+      vaultjobtype: inventory-retrieval
+
+
+
+Resources:
+
+############################################ SNS Topic ################################
+
+  SupportToolTopic:
+    DependsOn:
+      - CheckBucketExists   
+    Type: AWS::SNS::Topic
+    Properties: 
+      KmsMasterKeyId: alias/aws/sns   
+
+  SupportToolSubscription:
+    DependsOn:
+      - CheckBucketExists   
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref ContactEmail
+      Protocol: email
+      TopicArn: !Ref SupportToolTopic
+
+################################### Stack Name to Lower Case ##################################################
+
+  StackNametoLower:
+    Type: Custom::NametoLower
+    Properties:
+      ServiceToken: !GetAtt NametoLower.Arn
+      stackname: !Ref AWS::StackName    
+
+
+  NametoLowerIAMRole:
+    DependsOn:
+      - CheckBucketExists  
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow       
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+
+  NametoLower:
+    DependsOn:
+      - CheckBucketExists  
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Description: Enforces Lower case for Stackname
+      MemorySize: 128
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt NametoLowerIAMRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import cfnresponse
+
+
+          def lambda_handler(event, context):
+              to_lower = event['ResourceProperties'].get('stackname', '').lower()
+              responseData = dict(change_to_lower=to_lower)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+
+####################################### Code Ends ###########################################
+
+
+################################### Lambda Invoke Permissions ###############################
+
+  LambdaInvokePermission0:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt S3SupportToolJobTrackerWorker.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+    
+
+  LambdaInvokePermission1:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt S3SupportToolReportLambdaFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+
+
+################################ CheckBucketExists ######################################################
+
+
+  CheckBucketExists:  
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt CheckBucketExistsLambdaFunction.Arn
+      bucketexists: !Ref YourS3LogBucket      
+
+
+  CheckBucketExistsIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:  
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow       
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                Resource: 
+                # - !Sub arn:${AWS::Partition}:s3:::${YourProductionS3Bucket}
+                - !Sub arn:${AWS::Partition}:s3:::${YourS3LogBucket}
+
+
+  CheckBucketExistsLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Handler: index.lambda_handler
+      Role: !GetAtt CheckBucketExistsIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 128
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+
+
+            # Set SDK paramters
+            config = Config(retries = {'max_attempts': 5})
+
+            # Set variables
+            # Set Service Parameters
+            s3Client = boto3.client('s3', config=config, region_name=my_region)
+
+
+            def check_bucket_exists(bucket):
+                logger.info(f"Checking if the S3 Bucket Exists")
+                try:
+                    check_bucket = s3Client.get_bucket_location(
+                        Bucket=bucket,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f"Bucket {bucket}, exists, proceeding with deployment ...")
+                    return check_bucket            
+
+
+            def lambda_handler(event, context):
+              # Define Environmental Variables
+              s3Bucket  = event.get('ResourceProperties').get('bucketexists')
+
+              logger.info(f'Event detail is: {event}')
+
+              if event.get('RequestType') == 'Create' or event.get('RequestType') == 'Update':
+                # logger.info(event)
+                try:
+                  logger.info("Stack event is Create, checking if the S3 Bucket exists...")
+                  check_bucket_exists(s3Bucket)
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+              elif event.get('RequestType') == 'Delete' :
+                logger.info(event)
+                try:
+                  logger.info(f"Stack event is Delete, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData)                  
+
+
+################################################ Code Ends ####################################################
+
+
+####################################### Empty Solution S3 Bucket #####################################
+
+  CleanupSolBucketCustomResource:
+    Type: Custom::EmptyS3Bucket
+    Properties:
+      ServiceToken: !GetAtt CleanupSolBucket.Arn
+      bucketname: !Ref SupportToolBucket    
+
+
+  CleanupSolBucketIAMRole:
+    DependsOn:
+      - CheckBucketExists 
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: '/'
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: DeleteObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:Delete*'
+                  - 's3:List*'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}/*      
+                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}                
+
+
+  CleanupSolBucket:
+    DependsOn:
+      - CheckBucketExists 
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Description: Empties the Solution Amazon S3 Bucket
+      MemorySize: 512
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CleanupSolBucketIAMRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])     
+
+            # Create Service Resource
+            s3 = boto3.resource('s3', region_name=my_region)   
+            
+            ### Empty Bucket Function ###
+
+            def empty_bucket(bucket):
+                try:
+                    s3Bucket = s3.Bucket(bucket)
+                    s3Bucket.object_versions.delete()
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info("Bucket Emptying Successful!")    
+                 
+
+            def lambda_handler(event, context):
+                logger.info(f'Event detail is: {event}')
+                bucket_name = event['ResourceProperties'].get('bucketname')
+
+                # Start Cloudformation Invocation #
+                if event.get('RequestType') == 'Delete':
+                  # logger.info(event)
+                  try:
+                    logger.info("Stack event is Delete, Emptying S3 Bucket...")
+                    empty_bucket(bucket_name)
+                    responseData = {}
+                    responseData['message'] = "Successful"
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                    logger.error(e)
+                    responseData = {}
+                    responseData['message'] = str(e)
+                    failure_reason = str(e) 
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+                    
+                else:
+                  logger.info(f"Stack event is Create or Update, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)                 
+
+################################################ Code Ends #############################################################
+
+
+####################################### Empty Solution S3 Bucket #####################################
+
+  CleanupSolPrefix:
+    Type: Custom::EmptyS3Prefix
+    Properties:
+      ServiceToken: !GetAtt CleanupSolS3Prefix.Arn
+      bucketname: !Ref SupportToolBucket    
+      debugduration: !Ref DebugDuration
+      s3logtype: !Ref YourS3LogType
+      s3logprefix: !Ref YourS3LogBucketPrefix
+      s3logbucket: !Ref YourS3LogBucket
+
+
+
+
+  CleanupSolS3PrefixIAMRole:
+    DependsOn:
+      - CheckBucketExists 
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: '/'
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: DeleteObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:Delete*'
+                  - 's3:List*'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}/*      
+                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}                
+
+
+  CleanupSolS3Prefix:
+    DependsOn:
+      - CheckBucketExists 
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Description: Empties the Solution Amazon S3 Bucket Log Prefix
+      Environment:
+        Variables:                             
+          ctrail_log_path: !FindInMap
+              - Bucket
+              - Parameters
+              - cloudtraillogcopypath      
+      MemorySize: 512
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CleanupSolS3PrefixIAMRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_prefix = str(os.environ['ctrail_log_path'])         
+
+            # Create Service Resource
+            s3 = boto3.resource('s3', region_name=my_region)   
+            
+            ### Empty Bucket Prefix Function ###
+
+            def empty_bucket_prefix(bucket, prefix):
+                try:
+                    s3Bucket = s3.Bucket(bucket)
+                    s3Bucket.object_versions.filter(Prefix=prefix).delete()
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info("Prefix Emptying Successful!")                        
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Event detail is: {event}')
+                bucket_name = event['ResourceProperties'].get('bucketname')
+
+                # Start Cloudformation Invocation #
+                if event.get('RequestType') == 'Update':
+                  # logger.info(event)
+                  try:
+                    logger.info("Stack event is Update, Emptying Cloudtrail logs prefix only...")
+                    empty_bucket_prefix(bucket_name, my_prefix)
+                    responseData = {}
+                    responseData['message'] = "Successful"
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                    logger.error(e)
+                    responseData = {}
+                    responseData['message'] = str(e)
+                    failure_reason = str(e) 
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)                        
+
+                else:
+                  logger.info(f"Stack event is Create or Delete, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)                 
+
+################################################ Code Ends #############################################################
+
+
+
+################################################# Support Tool S3 Bucket #############################################
+              
+
+  SupportToolBucket:
+    DependsOn:
+      - CheckBucketExists
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 's3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+      LifecycleConfiguration:
+        Rules:
+          - Id: delete-incomplete-mpu-expired-delete
+            Prefix: ''
+            ExpiredObjectDeleteMarker: true
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            Status: Enabled
+          - Id: ExpirationRule
+            Status: Enabled
+            ExpirationInDays: 14
+            NoncurrentVersionExpiration:
+                NoncurrentDays: 1
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Function: !GetAtt S3SupportToolJobTrackerWorker.Arn
+            Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .json
+                  - Name: prefix
+                    Value: !FindInMap [ ManifestBucketinfo, batchopsreport, copyjob ] 
+          - Function: !GetAtt S3SupportToolReportLambdaFunction.Arn
+            Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .csv
+                  - Name: prefix
+                    Value: !FindInMap [ Bucket, Parameters, csvforsupport ] 
+
+
+  AthenaWorkGroup:
+    DependsOn:
+      - CheckBucketExists 
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub 'wkgrp-${StackNametoLower.change_to_lower}'
+      Description: S3 Troubleshooting Tool Athena WorkGroup
+      State: ENABLED
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration:
+          OutputLocation: !Join ['', ['s3://', !Ref SupportToolBucket, '/', !FindInMap [ Bucket, Parameters, csvforsupport ] ]]
+
+
+  glueDatabase:
+    DependsOn:
+      - CheckBucketExists 
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        LocationUri: !Sub 's3://${SupportToolBucket}'
+        Name: !Sub 'support-db-${StackNametoLower.change_to_lower}'
+
+
+  glueTableForCloudTrailLog:
+      Type: AWS::Glue::Table
+      Condition: UseCloudtrailLogs 
+      Properties:
+        CatalogId: !Ref AWS::AccountId
+        DatabaseName: !Ref glueDatabase
+        TableInput:
+          Name: !Sub 'support-tbl-${StackNametoLower.change_to_lower}'
+          Description: AWS CloudTrail data
+          TableType: EXTERNAL_TABLE
+          StorageDescriptor:
+            Columns:
+              - Name: eventversion
+                Type: string
+              - Name: useridentity
+                Type: struct<type:string,principalid:string,arn:string,accountid:string,invokedby:string,accesskeyid:string,username:string,sessioncontext:struct<attributes:struct<mfaauthenticated:string,creationdate:string>,sessionissuer:struct<type:string,principalid:string,arn:string,accountid:string,username:string>>>
+              - Name: eventtime
+                Type: string
+              - Name: eventsource
+                Type: string
+              - Name: eventname
+                Type: string
+              - Name: awsregion
+                Type: string
+              - Name: sourceipaddress
+                Type: string
+              - Name: useragent
+                Type: string
+              - Name: errorcode
+                Type: string
+              - Name: errormessage
+                Type: string
+              - Name: requestparameters
+                Type: string
+              - Name: responseelements
+                Type: string
+              - Name: additionaleventdata
+                Type: string
+              - Name: requestid
+                Type: string
+              - Name: eventid
+                Type: string
+              - Name: resources
+                Type: array<struct<arn:string,accountid:string,type:string>>
+              - Name: eventtype
+                Type: string
+              - Name: apiversion
+                Type: string
+              - Name: readonly
+                Type: string
+              - Name: recipientaccountid
+                Type: string
+              - Name: serviceeventdetails
+                Type: string
+              - Name: sharedeventid
+                Type: string
+              - Name: vpcendpointid
+                Type: string
+            Location: !Join ['', ['s3://', !Ref SupportToolBucket, '/', !FindInMap [ Bucket, Parameters, cloudtraillogcopypath ], '/' ]]
+            InputFormat: com.amazon.emr.cloudtrail.CloudTrailInputFormat
+            OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+            Compressed: False
+            StoredAsSubDirectories: true
+            SerdeInfo:
+              SerializationLibrary: org.apache.hive.hcatalog.data.JsonSerDe
+              Parameters: {
+                "serialization.format": "1"
+              }
+            Parameters: {}
+          Retention: 0        
+
+
+
+
+################################ Lambda to Copy Logs to Solution Bucket #######################
+
+  StartLogsCopy:
+    DependsOn:
+      - CheckBucketExists
+    Type: Custom::InvokeCustomLambda
+    Properties:
+      ServiceToken: !GetAtt SupportToolLogBatchCopy.Arn
+      your_s3_logs_bucket: !Sub ${YourS3LogBucket}
+      your_s3_log_prefix: !Sub ${YourS3LogBucketPrefix}    
+      your_log_type: !Sub ${YourS3LogType}
+      debug_duration: !Ref DebugDuration    
+
+  SupportToolLogBatchCopyIAMRole:
+    DependsOn:
+      - CheckBucketExists
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow      
+        - PolicyName: GrantFunctioAdditionalPerm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*'
+                Effect: Allow
+              - Action:
+                  - 's3:DescribeJob'
+                  - 's3:ListJobs'
+                  - 's3:PutJobTagging'
+                  - 's3:CreateJob'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:job/*'
+                Effect: Allow
+              - Action:
+                  - 'iam:PassRole'
+                Resource: !GetAtt S3BatchOperationsServiceIamRole.Arn
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+
+
+  SupportToolLogBatchCopy:
+    DependsOn:
+      - CheckBucketExists  
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Environment:
+        Variables:                             
+          batch_ops_report_bucket: !Sub 's3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+          batch_ops_role: !GetAtt S3BatchOperationsServiceIamRole.Arn
+          my_current_region: !Sub ${AWS::Region}
+          my_account_id: !Sub ${AWS::AccountId}
+          s3_access_log_copy_location: !FindInMap
+              - Bucket
+              - Parameters
+              - s3accesslogcopypath
+          cloudtrail_log_copy_location: !FindInMap
+              - Bucket
+              - Parameters
+              - cloudtraillogcopypath                 
+          batch_ops_report_prefix: !FindInMap
+              - ManifestBucketinfo
+              - batchopsreport
+              - copyjob
+          batch_ops_manifest_prefix: !FindInMap
+              - ManifestBucketinfo
+              - manifest
+              - manifestprefix              
+      Handler: index.lambda_handler
+      Role: !GetAtt SupportToolLogBatchCopyIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          from urllib import parse
+          import cfnresponse
+          import logging
+          import os
+          import boto3
+          import time
+          from botocore.exceptions import ClientError
+          from botocore.client import Config
+          import datetime
+          from dateutil.tz import tzlocal
+
+          # Enable debugging for troubleshooting
+          # boto3.set_stream_logger("")
+
+
+          # Set up logging
+          logger = logging.getLogger(__name__)
+          logger.setLevel('INFO')
+
+          # Define Environmental Variables
+          my_region = str(os.environ['AWS_REGION'])
+          my_role_arn = str(os.environ['batch_ops_role'])
+          report_bucket_name = str(os.environ['batch_ops_report_bucket'])
+          accountId = str(os.environ['my_account_id'])
+          my_s3_access_log_copy_location = str(os.environ['s3_access_log_copy_location'])
+          my_cloudtrail_log_copy_location = str(os.environ['cloudtrail_log_copy_location'])
+
+
+          # Specify variables #############################
+
+          # Job Manifest Details ################################
+          job_manifest_format = 'S3InventoryReport_CSV_20211130'
+          job_manifest_prefix = str(os.environ['batch_ops_manifest_prefix'])
+
+          # Job Report Details ############################
+          report_prefix = str(os.environ['batch_ops_report_prefix'])
+          report_format = 'Report_CSV_20180820'
+          report_scope = 'AllTasks'
+
+
+          # Construct ARNs
+
+          report_bucket_arn = 'arn:aws:s3:::' + report_bucket_name
+          target_resource_arn = 'arn:aws:s3:::' + report_bucket_name
+
+          # Manifest Generator Variable
+          manifest_gen_filter_storage_class_list = ['STANDARD', 'ONEZONE_IA', 'STANDARD_IA', 'INTELLIGENT_TIERING']
+          # Specify checksum algorithm
+          my_checksum_algorithm = 'SHA256'  # 'CRC32'|'CRC32C'|'SHA1'|'SHA256'
+
+          # Initiate Service Clients ###################
+          s3ControlClient = boto3.client('s3control', region_name=my_region)
+
+
+
+          # S3 Batch Copy Function
+
+          def s3_batch_ops_copy_manifest_generator(target_key_prefix, source_bucket_arn, source_bucket_prefix, debug_start_days):
+              my_request_kwargs = {
+                  'AccountId': accountId,
+                  'ConfirmationRequired': False,
+                  'Operation': {
+                      'S3PutObjectCopy': {
+                          'TargetResource': target_resource_arn,
+                          'CannedAccessControlList': 'private',
+                          'MetadataDirective': 'COPY',
+                          'TargetKeyPrefix': target_key_prefix,
+                          'ChecksumAlgorithm': my_checksum_algorithm
+                      }
+                  },
+                  'Report': {
+                      'Bucket': report_bucket_arn,
+                      'Format': report_format,
+                      'Enabled': True,
+                      'Prefix': report_prefix,
+                      'ReportScope': 'AllTasks'
+                  },
+                  'ManifestGenerator': {
+                      'S3JobManifestGenerator': {
+                          'SourceBucket': source_bucket_arn,
+                          'ManifestOutputLocation': {
+                              'Bucket': report_bucket_arn,
+                              'ManifestPrefix': job_manifest_prefix,
+                              'ManifestEncryption': {
+                                  'SSES3': {},
+                              },
+                              'ManifestFormat': job_manifest_format
+                          },
+                          'Filter': {
+                              'CreatedAfter': debug_start_days,
+                              'MatchAnyStorageClass': manifest_gen_filter_storage_class_list
+                          },
+                          'EnableManifestOutput': True
+                      }
+                  },
+                  'Priority': 10,
+                  'RoleArn': my_role_arn,
+                  'Tags': [
+                      {
+                          'Key': 'job-created-by',
+                          'Value': 'aws-support-troubleshooting-tool-for-s3'
+                      },
+                  ]
+              }
+
+              logger.info(my_request_kwargs)
+              if source_bucket_prefix:
+                  my_request_kwargs['ManifestGenerator']['S3JobManifestGenerator']['Filter']['KeyNameConstraint'] = {
+                      'MatchAnyPrefix': [source_bucket_prefix, ]}
+                  logger.info(f"Source Prefix is present, modified request kwargs to: {my_request_kwargs}")
+
+              try:
+                  logger.info(f"Submitting kwargs to S3 Batch Operations: {my_request_kwargs}")
+                  response = s3ControlClient.create_job(**my_request_kwargs)
+                  logger.info(f"JobID is: {response['JobId']}")
+                  logger.info(f"S3 RequestID is: {response['ResponseMetadata']['RequestId']}")
+                  logger.info(f"S3 Extended RequestID is:{response['ResponseMetadata']['HostId']}")
+                  return response['JobId']
+              except ClientError as e:
+                  logger.error(e)
+
+
+          def lambda_handler(event, context):
+              logger.info(f'Event detail is: {event}')
+              my_copy_destination = None
+              # Retrieve Invocation Variables
+              my_logs_bucket = event.get('ResourceProperties').get('your_s3_logs_bucket')
+              my_log_prefix = event.get('ResourceProperties').get('your_s3_log_prefix')
+              my_log_type = event.get('ResourceProperties').get('your_log_type')
+              logger.info(f"my_log_prefix is {my_log_prefix}")
+              
+              # Set Debug number of days
+              offset_days = int(event.get('ResourceProperties').get('debug_duration'))
+              my_debug_start_days = datetime.datetime.now().replace(tzinfo=tzlocal()) - datetime.timedelta(offset_days)
+
+              # Set Copy destination depending on Log Type
+              if my_log_type == 'CloudTrail':
+                  my_copy_destination = my_cloudtrail_log_copy_location
+              else:
+                  my_copy_destination = my_s3_access_log_copy_location
+
+                  # Generate ARNs
+              my_logs_bucket_arn = 'arn:aws:s3:::' + my_logs_bucket
+              # my_manifest_bucket_arn = 'arn:aws:s3:::' + manifest_bucket
+
+              # Initiate Custom lambda Invocation based on Stack Request Type
+              if event.get('RequestType') == 'Create':
+                  # logger.info(event)
+                  try:
+                      logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
+                      # Introduce a delay to allow consistency
+                      time.sleep(150)
+                      s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_debug_start_days)
+                      # check_bucket_exists(s3Bucket)
+                      responseData = {}
+                      responseData['message'] = "Successful"
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                      logger.error(e)
+                      responseData = {}
+                      responseData['message'] = str(e)
+                      failure_reason = str(e)
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+              elif event.get('RequestType') == 'Update':
+                  # logger.info(event)
+                  try:
+                      logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
+                      s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_debug_start_days)
+                      # check_bucket_exists(s3Bucket)
+                      responseData = {}
+                      responseData['message'] = "Successful"
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                      logger.error(e)
+                      responseData = {}
+                      responseData['message'] = str(e)
+                      failure_reason = str(e)
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+              elif event.get('RequestType') == 'Delete':
+                  logger.info(event)
+                  try:
+                      logger.info(f"Stack event is Delete, nothing to do....")
+                      responseData = {}
+                      responseData['message'] = "Completed"
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                      logger.error(e)
+                      responseData = {}
+                      responseData['message'] = str(e)
+                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+
+
+##################################### Code Ends  ######################################################
+
+############################### S3 Batch Operations IAM Role ##############################
+
+
+  S3BatchOperationsServiceIamRole:
+    DependsOn:
+      - SupportToolBucket
+      - CheckBucketExists 
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: S3BatchOperationsServiceIamRolePolicy0
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:GetObjectAcl'                                
+                  - 's3:PutObject'
+                  - 's3:PutObjectVersion'
+                  - 's3:GetBucketLocation'
+                  - 's3:PutObjectAcl'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*'
+                Effect: Allow
+              - Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:GetBucketLocation'
+                  - 's3:PutInventoryConfiguration'                  
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${YourS3LogBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${YourS3LogBucket}/*
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batchoperations.s3.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+
+
+
+################################################################################################
+
+
+########################## S3AutoRestore Job Tracker Function ####################################
+
+
+
+  S3SupportToolJobTrackerWorkerIAMRole:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow      
+        - PolicyName: GrantFunctioAdditionalPerm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 's3:DescribeJob'
+                  - 's3:GetJobTagging'
+                  - 's3:ListJobs'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:job/*'
+                Effect: Allow
+              - Action:
+                  - 'lambda:InvokeFunction'
+                Resource: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+                Effect: Allow        
+              - Action:
+                  - 'sns:Publish'
+                Resource: !Ref SupportToolTopic
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+
+  S3SupportToolJobTrackerWorker:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64    
+      Environment:
+        Variables:
+          my_account_id: !Sub ${AWS::AccountId}
+          query_function: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+          sns_topic_arn: !Ref SupportToolTopic
+      Handler: index.lambda_handler
+      Role: !GetAtt S3SupportToolJobTrackerWorkerIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import botocore
+          import os
+          import logging
+          import datetime
+          import uuid
+          from botocore.exceptions import ClientError
+          from urllib import parse
+
+          # Set up logging
+          logger = logging.getLogger(__name__)
+          logger.setLevel('INFO')
+
+          # Initiate Variables
+
+          # Lambda Environment Variables
+          accountId = str(os.environ['my_account_id'])
+          my_region = str(os.environ['AWS_REGION'])
+          query_function_name = str(os.environ['query_function'])
+          my_sns_topic_arn = str(os.environ['sns_topic_arn'])     
+
+          # Other Variables
+          function_invocation_type = 'RequestResponse'          
+
+          # Create Service Clients
+          s3ControlClient = boto3.client('s3control', region_name=my_region)
+          s3Client = boto3.client('s3', region_name=my_region)
+          lambdaClient = boto3.client('lambda', region_name=my_region)
+          sns = boto3.client('sns', region_name=my_region)
+
+          # Describe S3 Batch Operations Job
+          def s3_batch_describe_job(my_job_id):
+              response = s3ControlClient.describe_job(
+                  AccountId=accountId,
+                  JobId=my_job_id
+              )
+              job_desc = (response.get('Job'))
+              return job_desc
+
+          
+          # SNS Message Function
+          def send_sns_message(sns_topic_arn, sns_message):
+              logger.info("Sending SNS Notification Message......")
+              sns_subject = 'Notification from AWS Support Troubleshooting Tool'
+              try:
+                  response = sns.publish(TopicArn=sns_topic_arn, Message=sns_message, Subject=sns_subject)
+              except ClientError as e:
+                  logger.error(e)
+
+
+          # Function to Invoke Copy Function Worker
+          def invoke_function(function_name, invocation_type, payload):
+              invoke_response = lambdaClient.invoke(
+                  FunctionName=function_name,
+                  InvocationType=invocation_type,
+                  Payload=payload,
+
+              )
+              response_payload = json.loads(invoke_response['Payload'].read().decode("utf-8"))
+              return response_payload        
+
+
+          # Get S3 Batch Operations Tag
+          def get_job_tagging(bops_job_id):
+              logger.info("Initiate GetJob Tagging")
+              try:
+                  get_job_tag_response = s3ControlClient.get_job_tagging(
+                      AccountId=accountId,
+                      JobId=bops_job_id
+                  )
+              except ClientError as e:
+                  logger.error(e)
+              else:
+                  logger.info("Successfully retrieved Job Tags")
+                  tag_key = get_job_tag_response.get('Tags')[0].get('Key')
+                  tag_value = get_job_tag_response.get('Tags')[0].get('Value')
+                  return tag_key, tag_value
+
+
+          def lambda_handler(event, context):
+              logger.info(event)
+              try:
+                  # s3Bucket = str(event['detail']['bucket']['name'])
+                  # s3Key = parse.unquote_plus(event['detail']['object']['key'], encoding='utf-8')
+                  # etag = str(event['detail']['object']['etag'])                  
+                  s3Bucket = str(event['Records'][0]['s3']['bucket']['name'])
+                  s3Key = parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+                  etag = str(event['Records'][0]['s3']['object']['eTag'])
+                  logger.info(f"S3 Key is: {s3Key}")
+                  retrieve_job_id = s3Key.split('/')[-2]
+                  job_id = retrieve_job_id.replace('job-', '', 1)
+                  my_job_details = s3_batch_describe_job(job_id)
+                  logger.info(f"Batch Operation Job details: {my_job_details}")
+                  job_operation = list(my_job_details.get('Operation').keys())[0]
+                  job_status = my_job_details.get('Status')
+                  job_arn = my_job_details.get('JobArn')
+                  job_creation_datetime = str(my_job_details.get('CreationTime'))
+                  job_completion_datetime = str(my_job_details.get('TerminationDate'))
+                  number_of_tasks = my_job_details.get('ProgressSummary').get('TotalNumberOfTasks')
+                  # number_of_fields = str(len(my_job_details.get('Manifest').get('Spec').get('Fields')))
+                  tasks_succeeded = my_job_details.get('ProgressSummary').get('NumberOfTasksSucceeded')
+                  tasks_failed = my_job_details.get('ProgressSummary').get('NumberOfTasksFailed')
+                  logger.info(f'Number of Tasks: {number_of_tasks}')
+                  logger.info(f'Tasks_succeeded: {tasks_succeeded}')
+                  logger.info(f'Tasks_failed: {tasks_failed}')
+
+                  # Send a notification to the user if Batch Operations Job fails
+                  if job_status == 'Failed':
+                      my_sns_message = f'Batch Operations Copy Job Failed! Please check the Batch Operations Job JobID {job_id} Completion Report in the Amazon S3 Console for more details.'
+                      logger.info(f"{my_sns_message}")
+                      send_sns_message(my_sns_topic_arn, my_sns_message)
+
+                  # Send notification if all tasks fail or initiate workflow if all or some tasks succeed
+                  if job_status == 'Complete':
+                      if number_of_tasks == tasks_failed:
+                          my_sns_message = f'All Tasks Failed! Please check the Batch Operations Job JobID {job_id} Completion Report in the Amazon S3 Console for more details.'
+                          logger.info(f"{my_sns_message}")
+                          send_sns_message(my_sns_topic_arn, my_sns_message)
+                      else:
+                          job_details = str(my_job_details)
+                          # Only work on Tagged Jobs
+                          job_tag_key, job_tag_value = get_job_tagging(job_id)
+                          # Trigger next workflow for a Successfully Completed Copy Job
+                          if job_operation == 'S3PutObjectCopy':
+                              # Starting Condition
+                              if job_tag_key == 'job-created-by' and job_tag_value == 'aws-support-troubleshooting-tool-for-s3' and job_status == 'Complete':
+                                  my_sns_message = f'Copy Job {job_id} Completed: {tasks_failed} failed out of {number_of_tasks}. Please check the Batch Operations Job JobID {job_id} in the Amazon S3 Console for more details.'
+                                  logger.info(f"{my_sns_message}")
+                                  # Start Athena Query Function Invoke
+                                  # Generate Payload for Invocation:
+                                  my_payload = {"my_etag": etag}
+                                  my_payload_json = json.dumps(my_payload)                                  
+                                  send_sns_message(my_sns_topic_arn, my_sns_message)
+                                  # Send notification for Athena query start
+                                  my_sns_message = f'Starting Athena Query'
+                                  logger.info(f"{my_sns_message}")
+                                  send_sns_message(my_sns_topic_arn, my_sns_message)
+                                  invoke_query_funct = invoke_function(query_function_name, function_invocation_type, my_payload_json)
+                                  logger.info(invoke_query_funct)                               
+
+                              elif job_tag_key == 'job-created-by' and job_tag_value == 'aws-support-troubleshooting-tool-for-s3' and job_status == 'Failed':
+                                  my_sns_message = f'S3 Logs Copy Job {job_id} failed, please check the Batch Operations Job JobID {job_id} in the Amazon S3 Console for more details!'
+                                  logger.info(f"{my_sns_message}")
+                                  send_sns_message(my_sns_topic_arn, my_sns_message)
+
+              except Exception as e:
+                  logger.error(e)
+                  raise
+
+
+
+########################################### Code Ends      #######################################          
+
+################################################# Notify Troubleshooting Report Lambda  ##########################################################
+
+
+  S3SupportToolReportIAMRole:
+    DependsOn:
+      - CheckBucketExists
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - 'sns:Publish'
+                Resource: !Ref SupportToolTopic
+                Effect: Allow                  
+
+
+
+
+  S3SupportToolReportLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn:
+      - CheckBucketExists
+    Properties:
+      Architectures:
+        - arm64
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          sns_topic_arn: !Ref SupportToolTopic
+      Handler: index.lambda_handler
+      Role: !GetAtt S3SupportToolReportIAMRole.Arn
+      Code:
+        ZipFile: |
+            import json
+            from botocore.exceptions import ClientError
+            import logging
+            import os
+            import datetime
+            import boto3
+            from urllib import parse
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Enable Debug Logging
+            # boto3.set_stream_logger("")
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_sns_topic_arn = str(os.environ['sns_topic_arn'])
+
+            # Set Service Client
+            sns = boto3.client('sns', region_name=my_region)
+
+            # SNS Message Function
+            def send_sns_message(sns_topic_arn, sns_message):
+                logger.info("Sending SNS Notification Message......")
+                sns_subject = 'Notification from AWS Support Troubleshooting Tool'
+                try:
+                    response = sns.publish(TopicArn=sns_topic_arn, Message=sns_message, Subject=sns_subject)
+                except ClientError as e:
+                    logger.error(e)            
+
+
+            def lambda_handler(event, context):
+                logger.info(event)
+                # Use Etag to prevent duplicate invocation
+                my_request_token = event.get('my_etag')
+                logger.info(f'Initiating Main Function...')
+                s3Bucket = str(event['Records'][0]['s3']['bucket']['name'])
+                s3Key = parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+                try:
+                  my_sns_message = f'Athena Query Completed Successfully, kindly retrieve your s3 troubleshooting report in the Amazon S3 bucket path s3://{s3Bucket}/{s3Key} .'
+                  send_sns_message(my_sns_topic_arn, my_sns_message)
+                except Exception as e:
+                  logger.error(e)
+                else: 
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Successful Invocation!')
+                  }        
+
+
+################################################# Code Ends ####################################################
+
+################################ Second Lambda to Initiate Athena Query #######################
+
+  StartAthenaQuery:
+    DependsOn:
+      - CheckBucketExists
+    Type: Custom::InvokeCustomLambda
+    Properties:
+      ServiceToken: !GetAtt S3SupportToolStartAthenaQuery.Arn
+      analysis_type: !Ref AnalysisType
+      prod_bucket: !Ref YourProductionS3Bucket     
+
+
+  S3SupportToolStartAthenaQueryIAMRole:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow      
+        - PolicyName: GrantFunctioAdditionalPerm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'lambda:InvokeFunction'
+                Resource: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+                Effect: Allow        
+              - Action:
+                  - 'sns:Publish'
+                Resource: !Ref SupportToolTopic
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+
+
+  S3SupportToolStartAthenaQuery:
+    DependsOn:
+      - CheckBucketExists   
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64    
+      Environment:
+        Variables:
+          my_account_id: !Sub ${AWS::AccountId}
+          query_function: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+          sns_topic_arn: !Ref SupportToolTopic
+      Handler: index.lambda_handler
+      Role: !GetAtt S3SupportToolStartAthenaQueryIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          import cfnresponse
+          import boto3
+          import botocore
+          import os
+          import logging
+          import datetime
+          import uuid
+          from botocore.exceptions import ClientError
+          from urllib import parse
+
+          # Set up logging
+          logger = logging.getLogger(__name__)
+          logger.setLevel('INFO')
+
+          # Initiate Variables
+
+          # Lambda Environment Variables
+          accountId = str(os.environ['my_account_id'])
+          my_region = str(os.environ['AWS_REGION'])
+          query_function_name = str(os.environ['query_function'])
+          my_sns_topic_arn = str(os.environ['sns_topic_arn'])     
+
+          # Other Variables
+          function_invocation_type = 'RequestResponse'          
+
+          # Create Service Clients
+          s3ControlClient = boto3.client('s3control', region_name=my_region)
+          s3Client = boto3.client('s3', region_name=my_region)
+          lambdaClient = boto3.client('lambda', region_name=my_region)
+          sns = boto3.client('sns', region_name=my_region)
+
+          
+          # SNS Message Function
+          def send_sns_message(sns_topic_arn, sns_message):
+              logger.info("Sending SNS Notification Message......")
+              sns_subject = 'Notification from AWS Support Troubleshooting Tool'
+              try:
+                  response = sns.publish(TopicArn=sns_topic_arn, Message=sns_message, Subject=sns_subject)
+              except ClientError as e:
+                  logger.error(e)
+
+
+          # Function to Invoke Copy Function Worker
+          def invoke_function(function_name, invocation_type, payload):
+              invoke_response = lambdaClient.invoke(
+                  FunctionName=function_name,
+                  InvocationType=invocation_type,
+                  Payload=payload,
+
+              )
+              response_payload = json.loads(invoke_response['Payload'].read().decode("utf-8"))
+              return response_payload        
+
+
+          def lambda_handler(event, context):
+              logger.info(event)
+
+              # Start Cloudformation Invocation #
+              if event.get('RequestType') == 'Update':
+                # logger.info(event)
+                try:
+                  logger.info("Stack event Update, Starting Athena Query Workflow...")
+                  # Starting Athena Query Workflow
+                  my_sns_message = f'Starting Athena Query'
+                  logger.info(f"{my_sns_message}")
+                  # Start Athena Query Function Invoke
+                  # Generate Payload for Invocation:
+                  my_payload = {"my_etag": str(uuid.uuid4()) }
+                  my_payload_json = json.dumps(my_payload)                                  
+                  send_sns_message(my_sns_topic_arn, my_sns_message)
+                  # Start Athena Query Function Invoke
+                  invoke_query_funct = invoke_function(query_function_name, function_invocation_type, my_payload_json)
+                  logger.info(invoke_query_funct)    
+
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+              else:
+                logger.info(f"Stack event is Delete or Create, nothing to do....")
+                responseData = {}
+                responseData['message'] = "Completed"
+                logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)  
+
+  
+
+##################################### Code Ends  ######################################################
+
+
+
+
+
+############################################# Athena Query Function ########################################
+
+  S3SupportToolAthenaQueryIAMRole:
+    DependsOn:
+      - CheckBucketExists
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 'athena:GetQueryResults'
+                  - 's3:ListMultipartUploadParts'
+                  - 'athena:GetWorkGroup'
+                  - 's3:AbortMultipartUpload'
+                  - 'athena:StopQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
+                  - !Sub 'arn:${AWS::Partition}:s3:::s3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*' 
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/wkgrp-${StackNametoLower.change_to_lower}"
+              - Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetPartition'
+                  - 'glue:GetTables'
+                  - 'glue:GetPartitions'
+                  - 'glue:GetTable'
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/support-tbl-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/support-tbl-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/support-db-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/support-db-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/support-db-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+
+
+
+  S3SupportToolAthenaQueryLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn:
+      - CheckBucketExists
+    Properties:
+      Architectures:
+        - arm64
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          query_duration: !Ref DebugDuration
+          workgroup_name: !Sub 'wkgrp-${StackNametoLower.change_to_lower}'
+          glue_tbl: !Sub 'support-tbl-${StackNametoLower.change_to_lower}'
+          glue_db: !Sub 'support-db-${StackNametoLower.change_to_lower}'
+          s3_bucket: !Ref YourProductionS3Bucket
+          query_analysis_type: !Ref AnalysisType
+      Handler: index.lambda_handler
+      Role: !GetAtt S3SupportToolAthenaQueryIAMRole.Arn
+      Code:
+        ZipFile: |
+            import json
+            from botocore.exceptions import ClientError
+            import logging
+            import os
+            import datetime
+            import boto3
+            from urllib import parse
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Enable Debug Logging
+            # boto3.set_stream_logger("")
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_glue_db = str(os.environ['glue_db'])
+            my_glue_tbl = str(os.environ['glue_tbl'])
+            my_workgroup_name = str(os.environ['workgroup_name'])
+            my_s3_bucket = str(os.environ['s3_bucket'])
+            my_query_duration = int(os.environ['query_duration'])
+            my_query_analysis_type = str(os.environ['query_analysis_type'])
+
+
+            my_current_date = datetime.datetime.now().date()
+            # retain_date = datetime.datetime.now().date() + datetime.timedelta(num_days) + datetime.timedelta(safety_margin)
+
+            logger.info(f'my_current_date is: {my_current_date}')
+            logger.info(f'my_query_duration is: {my_query_duration}')
+
+
+            # Set Service Client
+            athena_client = boto3.client('athena', region_name=my_region)
+
+
+            def start_query_execution(query_string, athena_db, workgroup_name, job_request_token):
+                logger.info(f'Starting Athena query...... with query string: {query_string}')
+                try:
+                    execute_query = athena_client.start_query_execution(
+                        QueryString=query_string,
+                        QueryExecutionContext={
+                            'Database': athena_db
+                        },
+                        WorkGroup=workgroup_name,
+                        ClientRequestToken= job_request_token,
+                    )
+                except ClientError as e:
+                    logger.info(e)
+                else:
+                    logger.info(f'Query Successful: {execute_query}')
+
+
+            def lambda_handler(event, context):
+                logger.info(event)
+                # Use Etag to prevent duplicate invocation
+                my_request_token = event.get('my_etag')
+                logger.info(f'Initiating Main Function...')
+
+                # Specify the Athena Query #
+
+                match my_query_analysis_type:
+
+                    case "AnonymousAccess":
+                        logger.info("AnonymousAccess") 
+                        if my_s3_bucket:
+                            my_query_string = f"""                    
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage, 
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
+                            and
+                            userIdentity.accountId = 'anonymous';
+                            """                           
+                        else:
+                            my_query_string = f"""                    
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage, 
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            and
+                            userIdentity.accountId = 'anonymous';
+                            """         
+
+                    case "CreateBucket":
+                        logger.info("CreateBucket") 
+                        if my_s3_bucket:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
+                            and
+                            eventname = 'CreateBucket';
+                            """                           
+                        else:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            and
+                            eventname = 'CreateBucket';
+                            """                                                       
+
+                    case "DeleteBucket-*":
+                        logger.info("DeleteBucket-*")
+                        if my_s3_bucket:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"  
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
+                            and
+                            eventname like 'DeleteBucket%';
+                            """                                
+                        else:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"  
+                            WHERE eventsource = 's3.amazonaws.com'
+                            and
+                            eventname like 'DeleteBucket%';
+                            """                        
+
+                    case "PutBucket-*":
+                        logger.info("PutBucket-*") 
+                        if my_s3_bucket:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                  
+                            and
+                            eventname like 'PutBucket%';
+                            """  
+                        else:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'               
+                            and
+                            eventname like 'PutBucket%';
+                            """                                                              
+                                            
+                    case "DeleteObject-*":
+                        logger.info("DeleteObject-*")
+                        if my_s3_bucket:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'
+                            AND
+                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                            """  
+                        else:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                            """                                      
+
+                    case "AccessDenied":
+                        logger.info("AccessDenied")
+                        if my_s3_bucket:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                            
+                            AND
+                            errorCode = 'AccessDenied'
+                            """                           
+                        else:
+                            my_query_string = f"""
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage,
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}"
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            errorCode = 'AccessDenied'
+                            """   
+
+                    case _:
+                        my_query_string = None
+
+
+                try:
+                    if my_query_string: 
+                        start_query_execution(my_query_string, my_glue_db, my_workgroup_name, my_request_token)
+                    else:
+                        logger.info("Nothing to do!")
+                except Exception as e:
+                    logger.error(e)
+                else:    
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps('Successful Invocation!')
+                    }        
+
+
+#################################### Code Ends ########################################################
+
+
+
+######################################## Outputs #################################
+
+Outputs:
+
+  S3BatchIAMRoleforCopy:
+    Value: !GetAtt S3BatchOperationsServiceIamRole.Arn
+    Description: IAM Role assumed by Batch Operations for the manifest generation and copy operation. This might require applicable KMS key permissions. 
