@@ -1,5 +1,3 @@
-# ReadMe: S3 Log Analysis
-
 # Guidance for Automated Querying of Amazon S3 Logs
 
 
