@@ -21,7 +21,7 @@
 <a name="1-overview"></a>
 ## 1. Overview
 
-The S3 Log Query guidance provides an automated workflow to query [Amazon S3](https://aws.amazon.com/s3/) server access logs and [CloudTrail](https://aws.amazon.com/cloudtrail/)logs. This solution helps customers audit API requests made to their S3 buckets and objects, providing valuable insights for troubleshooting, security analysis, and support case deflection.
+The S3 Log Query guidance provides an automated workflow to query [Amazon S3](https://aws.amazon.com/s3/) server access logs and [CloudTrail](https://aws.amazon.com/cloudtrail/) logs. This solution helps customers query and audit API requests made to their S3 buckets and objects, providing valuable insights for troubleshooting, security analysis, and support case deflection.
 
 
 #### High Level workflow
@@ -35,41 +35,100 @@ The S3 Log Query guidance provides an automated workflow to query [Amazon S3](ht
 <a name="2-key-features"></a>
 ## 2. Key Features
 
-The solution supports the following key features:
+The solution includes the following predefined queries:
 
+* ****Auditing Object Access****:
+
+This guidance includes a predefined athena query to discover who accesses (GetObject) an object, and the associated details (timestamp, IP address, IAM role). This allows you to track applications or principals attempting to access data stored in your Amazon S3 bucket.
+
+![](assets/objectaccess.png)
 
 * ****Auditing Accidental Deletions****:
 
-Checks who deleted an object, when, and the associated details (timestamp, IP address, IAM role).
-Identifies whether the objects were deleted by a manual DELETE API request or a Lifecycle expiration rule.
+Runs a query to discover who deleted an object, when, and the associated details (timestamp, IP address, IAM role). This helps to identifies whether the objects were deleted by a DELETE API request or a Lifecycle expiration rule
+
+![](assets/check-object-deletion-requester.png)
 
 
 * ****API Request Details (403 Access Denied)****:
 
-Analyzes server access log events based on operation, time period, requestor, response, and other fields.
+Queries server access log events based on operation, time period, requestor, response, and other fields.
 Provides detailed information about API requests that resulted in 403 Access Denied errors.
+
+![](assets/4xx-errors.png)
+
 
 * ****Bucket-level Configuration Auditing****:
 
-Tracks the history of a specific bucket, including when bucket versioning was suspended, bucket policy updates, Lifecycle rule changes, Replication configuration updates, Block Public Access settings changes, and encryption setting updates.
+Includes queries for bucket level configuration changes, including when bucket versioning was suspended, bucket policy updates, Lifecycle rule changes, Replication configuration updates, Block Public Access settings changes, and encryption setting updates.
+
+![](assets/bucket-configuration-auditing.png)
+
 
 * ****Bucket Performance (5xx Errors)****:
 
-Checks the number of 5xx errors returned by Amazon S3 within a given time frame, categorized by requester and operation.
+Checks the number of 5xx errors returned by Amazon S3 within a given time frame, and includes details such as requester, operation and other important details.
+
+![](assets/bucket-performance-5xx.png)
 
 
 * ****Networking****:
 
-Checks how clients are accessing Amazon S3 (via gateway endpoint, interface endpoint, or public network).
-Identifies the highest turnaround time for a specific time period, requestor, or operation.
+Identifies Client latency to Amazon S3, sorts by the highest turnaround time for a specific time period, requestor, or operation.
+
+![](assets/latency-networking.png)
+
 
 * **Lifecycle Action Statistics**:
 
 Provides statistics of Amazon S3 lifecycle actions such as count of object transitions and expiration. 
 
+![](assets/lifecycle-action-statistics.png)
+
+
 * **Lifecycle Actions**:
 
 Provides details of Amazon S3 lifecycle actions such as object transitions and expiration per object. 
+
+
+* Expiration:
+
+
+![](assets/lifecycle-expiration.png)
+
+* Transition:
+
+![](assets/lifecycle-transition.png)
+
+
+* **Top troubleshooting queries**:
+
+This query combines the results from:
+
+
+* Client errors (4xx)
+* Service errors (5xx)
+* Object deletions
+* Lifecycle expiration
+* Lifecycle transition
+
+
+
+**Feature matrix**
+
+The guidance provides two separate cloudformation templates for querying Amazon S3 access log and Cloudtrail events. See below the queries available in each template
+
+| Feature       | Server Access Log template | Cloudtrail log template |
+|:--------- |:------------ |:------------ |
+| Object Access	| Y | Y |
+| Client errors, including AccessDenied	| Y | Y |
+|Object deletions via S3 API	| Y	| Y |
+|Object expiration and transition and lifecycle statistics via S3 Lifecycle rules	| Y	| N |
+|Networking/Latency	| Y	| N |
+|Bucket Performance (5xx Errors)	| Y	| N |
+|Bucket-level Configuration Auditing	| N	| Y |
+|Top troubleshooting queries	| Y	| N |
+
 
 
 <a name="3-cost"></a>
@@ -112,9 +171,12 @@ To use this solution, you need:
 |YourS3LogBucketPrefix	| Specify the prefix to limit the amount of data copied and reduce cost	|
 |YourProductionS3Bucket	| The name of the S3 bucket you want to analyze	|
 |YourS3LogType	| Choose between S3AccessLogs or CloudTrail	|
-|DebugDuration	| Specify how far back to analyze logs	|
+|Include logs created AFTER this date	| Specifies the Start date range of logs to include	|
+|Include logs created BEFORE this date	| Specifies the End date range of logs to include	|
 |AnalysisType	| Choose the type of analysis to to perform (e.g., AnonymousAccess, CreateBucket, DeleteBucket, PutBucket, DeleteObject, AccessDenied, ServiceError-5xx, etc.)	|
 |ContactEmail	|Email address for notifications	|
+
+**_Note:_** : the "Include logs created AFTER" date cannot be the same date as "Include logs created BEFORE" date, it has to be earlier!
 
 * Review and create the stack.
 
@@ -140,7 +202,7 @@ Sample stack deployment for querying CloudTrails logs:
 
 ![](assets/batch-ops-copy-job.png)  
 
-* The stack creates multiple resources including an Amazon S3 bucket, logs from the customer provided logs bucket will be pied to the S3 bucket within the “support” prefix
+* The stack creates multiple resources including an Amazon S3 bucket, logs from the customer provided logs bucket will be copied to the S3 bucket within the “support” prefix
 
 ![](assets/s3-bucket-1.png)
 
@@ -154,6 +216,8 @@ Sample stack deployment for querying CloudTrails logs:
 * You can monitor the progress of the Athena query from the Athena Management Console. Select “Query Editor”,  at the “Workgroup” drop-down, select the Workgroup created by the solution and then select the “Recent Queries” tab. A query in progress shows "Running" status.
 
 ![](assets/athena-query-1.png)
+
+* You can also run your own custom queries by modifying the queries displayed above in the query editor, by directly using the Athena query editor
 
 
 <a name="7-accessing-the-query-results"></a>
@@ -189,7 +253,9 @@ To avoid ongoing costs, delete the CloudFormation stack when you're done:
 2. Select the stack you created.
 3. Choose "Delete" and confirm.
 
-This will remove all resources created by the solution.
+This will remove all resources created by the solution, except the Amazon S3 bucket containing the query results. 
+
+A lifecycle expiration rule is automatically applied to the guidance S3 bucket to expire the raw logs copied to it by Amazon S3 Batch operations after 1 day, however, the query results are retained for audit purposes.
 
 <a name="9-troubleshooting-guidance-limitations-and-additional-resources"></a>
 ## 9. Troubleshooting, Guidance, Limitations and Additional Resources
@@ -212,7 +278,6 @@ This will remove all resources created by the solution.
 
 * The solution is designed to work with S3 server access logs or CloudTrail logs. Other log formats are not supported.
 * There may be a delay between log generation and availability for analysis.
-* The solutions has a maximum predefined 90 days at the “Specify how long ago the issue started” stack parameter.
 * The solution does not provide real-time monitoring or alerting. It's designed for historical analysis and reporting.
 
 ### Additional Resources

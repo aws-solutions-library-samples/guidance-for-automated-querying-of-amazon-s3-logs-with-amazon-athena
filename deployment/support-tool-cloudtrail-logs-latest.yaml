@@ -43,7 +43,8 @@ Metadata:
         Label:
           default: "Troubleshooting, Analysis and Notification"
         Parameters:
-          - DebugDuration
+          - LogObjectCreatedAfter
+          - LogObjectCreatedBefore
           - AnalysisType
           - ContactEmail
 
@@ -64,9 +65,11 @@ Metadata:
       YourProductionS3Bucket:
         default: "Your Production Amazon S3 bucket, if specified, it will be used in the Athena Queries. Leave blank to return results for all your S3 buckets"      
       YourS3LogType:
-        default: "The type of Amazon S3 Logs you have configured, Cloudtrail data events for S3"                                
-      DebugDuration:
-        default: Specify how long ago the issue started.
+        default: "The type of Amazon S3 Logs you have configured, Cloudtrail data events for S3"      
+      LogObjectCreatedBefore:
+        default: Include logs created BEFORE this date
+      LogObjectCreatedAfter:
+        default: Include logs created AFTER this date                                    
       AnalysisType:
         default: Specify what you want to analyze from the logs includes Create and Delete Bucket, Object Deletion, Anonymous Access and Access Denied  
       ContactEmail:
@@ -114,6 +117,7 @@ Parameters:
   AnalysisType:
     Type: String
     AllowedValues:
+         - ObjectAccess
          - CreateBucket
          - DeleteBucket-*
          - PutBucket-*
@@ -121,18 +125,20 @@ Parameters:
          - AccessDenied
          - AnonymousAccess 
 
-
-  DebugDuration:
+  LogObjectCreatedBefore:
+    Description: Please specify a date to include logs created BEFORE this date, use the format YYYY-MM-DD. This date must be same/later than 'logs created AFTER this date' parameter
     Type: String
-    Default: 3
-    AllowedValues:
-         - 3
-         - 7
-         - 14
-         - 21
-         - 30
-         - 60
-         - 90
+    AllowedPattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+    ConstraintDescription: Please specify a valid datetime format, for example 2025-02-28
+    Default: 2025-02-28
+
+
+  LogObjectCreatedAfter:
+    Description: Please specify a date to include logs created AFTER this date, use the format YYYY-MM-DD. 
+    Type: String
+    AllowedPattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+    ConstraintDescription: Please specify a valid datetime format, for example 2024-12-31
+    Default: 2024-12-31
 
 
 Conditions:
@@ -158,7 +164,6 @@ Mappings:
       s3accesslogcopypath: 'support/s3/accesslog'
       cloudtraillogcopypath: 'support/s3/cloudtraillog'      
       csvforsupport: 'support/s3/processed/csv/'
-      vaultjobtype: inventory-retrieval
 
 
 
@@ -313,7 +318,6 @@ Resources:
                 Action:
                   - 's3:GetBucketLocation'
                 Resource: 
-                # - !Sub arn:${AWS::Partition}:s3:::${YourProductionS3Bucket}
                 - !Sub arn:${AWS::Partition}:s3:::${YourS3LogBucket}
 
 
@@ -414,283 +418,6 @@ Resources:
 
 ################################################ Code Ends ####################################################
 
-
-####################################### Empty Solution S3 Bucket #####################################
-
-  CleanupSolBucketCustomResource:
-    Type: Custom::EmptyS3Bucket
-    Properties:
-      ServiceToken: !GetAtt CleanupSolBucket.Arn
-      bucketname: !Ref SupportToolBucket    
-
-
-  CleanupSolBucketIAMRole:
-    DependsOn:
-      - CheckBucketExists 
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                - "lambda.amazonaws.com"
-            Action:
-              - "sts:AssumeRole"
-      Path: '/'
-      Policies:
-        - PolicyName: AWSLambdaBasicExecutionRole
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'                  
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
-                Effect: Allow        
-        - PolicyName: DeleteObjectPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 's3:Delete*'
-                  - 's3:List*'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}/*      
-                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}                
-
-
-  CleanupSolBucket:
-    DependsOn:
-      - CheckBucketExists 
-    Type: 'AWS::Lambda::Function'
-    Properties:
-      Architectures:
-        - arm64
-      Description: Empties the Solution Amazon S3 Bucket
-      MemorySize: 512
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Role: !GetAtt CleanupSolBucketIAMRole.Arn
-      Timeout: 900
-      Code:
-        ZipFile: |
-            import json
-            import cfnresponse
-            import logging
-            import os
-            import boto3
-            from botocore.exceptions import ClientError
-            from botocore.client import Config
-
-            # Enable debugging for troubleshooting
-            boto3.set_stream_logger("")
-
-
-            # Set up logging
-            logger = logging.getLogger(__name__)
-            logger.setLevel('INFO')
-
-
-            # Define Environmental Variables
-            my_region = str(os.environ['AWS_REGION'])     
-
-            # Create Service Resource
-            s3 = boto3.resource('s3', region_name=my_region)   
-            
-            ### Empty Bucket Function ###
-
-            def empty_bucket(bucket):
-                try:
-                    s3Bucket = s3.Bucket(bucket)
-                    s3Bucket.object_versions.delete()
-                except Exception as e:
-                    logger.error(e)
-                    raise
-                else:
-                    logger.info("Bucket Emptying Successful!")    
-                 
-
-            def lambda_handler(event, context):
-                logger.info(f'Event detail is: {event}')
-                bucket_name = event['ResourceProperties'].get('bucketname')
-
-                # Start Cloudformation Invocation #
-                if event.get('RequestType') == 'Delete':
-                  # logger.info(event)
-                  try:
-                    logger.info("Stack event is Delete, Emptying S3 Bucket...")
-                    empty_bucket(bucket_name)
-                    responseData = {}
-                    responseData['message'] = "Successful"
-                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-                  except Exception as e:
-                    logger.error(e)
-                    responseData = {}
-                    responseData['message'] = str(e)
-                    failure_reason = str(e) 
-                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
-                    
-                else:
-                  logger.info(f"Stack event is Create or Update, nothing to do....")
-                  responseData = {}
-                  responseData['message'] = "Completed"
-                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)                 
-
-################################################ Code Ends #############################################################
-
-
-####################################### Empty Solution S3 Bucket #####################################
-
-  CleanupSolPrefix:
-    Type: Custom::EmptyS3Prefix
-    Properties:
-      ServiceToken: !GetAtt CleanupSolS3Prefix.Arn
-      bucketname: !Ref SupportToolBucket    
-      debugduration: !Ref DebugDuration
-      s3logtype: !Ref YourS3LogType
-      s3logprefix: !Ref YourS3LogBucketPrefix
-      s3logbucket: !Ref YourS3LogBucket
-
-
-
-
-  CleanupSolS3PrefixIAMRole:
-    DependsOn:
-      - CheckBucketExists 
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                - "lambda.amazonaws.com"
-            Action:
-              - "sts:AssumeRole"
-      Path: '/'
-      Policies:
-        - PolicyName: AWSLambdaBasicExecutionRole
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'                  
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
-                Effect: Allow        
-        - PolicyName: DeleteObjectPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 's3:Delete*'
-                  - 's3:List*'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}/*      
-                  - !Sub arn:${AWS::Partition}:s3:::${SupportToolBucket}                
-
-
-  CleanupSolS3Prefix:
-    DependsOn:
-      - CheckBucketExists 
-    Type: 'AWS::Lambda::Function'
-    Properties:
-      Architectures:
-        - arm64
-      Description: Empties the Solution Amazon S3 Bucket Log Prefix
-      Environment:
-        Variables:                             
-          ctrail_log_path: !FindInMap
-              - Bucket
-              - Parameters
-              - cloudtraillogcopypath      
-      MemorySize: 512
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Role: !GetAtt CleanupSolS3PrefixIAMRole.Arn
-      Timeout: 900
-      Code:
-        ZipFile: |
-            import json
-            import cfnresponse
-            import logging
-            import os
-            import boto3
-            from botocore.exceptions import ClientError
-            from botocore.client import Config
-
-            # Enable debugging for troubleshooting
-            # boto3.set_stream_logger("")
-
-
-            # Set up logging
-            logger = logging.getLogger(__name__)
-            logger.setLevel('INFO')
-
-
-            # Define Environmental Variables
-            my_region = str(os.environ['AWS_REGION'])
-            my_prefix = str(os.environ['ctrail_log_path'])         
-
-            # Create Service Resource
-            s3 = boto3.resource('s3', region_name=my_region)   
-            
-            ### Empty Bucket Prefix Function ###
-
-            def empty_bucket_prefix(bucket, prefix):
-                try:
-                    s3Bucket = s3.Bucket(bucket)
-                    s3Bucket.object_versions.filter(Prefix=prefix).delete()
-                except Exception as e:
-                    logger.error(e)
-                    raise
-                else:
-                    logger.info("Prefix Emptying Successful!")                        
-
-
-            def lambda_handler(event, context):
-                logger.info(f'Event detail is: {event}')
-                bucket_name = event['ResourceProperties'].get('bucketname')
-
-                # Start Cloudformation Invocation #
-                if event.get('RequestType') == 'Update':
-                  # logger.info(event)
-                  try:
-                    logger.info("Stack event is Update, Emptying Cloudtrail logs prefix only...")
-                    empty_bucket_prefix(bucket_name, my_prefix)
-                    responseData = {}
-                    responseData['message'] = "Successful"
-                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-                  except Exception as e:
-                    logger.error(e)
-                    responseData = {}
-                    responseData['message'] = str(e)
-                    failure_reason = str(e) 
-                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)                        
-
-                else:
-                  logger.info(f"Stack event is Create or Delete, nothing to do....")
-                  responseData = {}
-                  responseData['message'] = "Completed"
-                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)                 
-
-################################################ Code Ends #############################################################
-
-
-
 ################################################# Support Tool S3 Bucket #############################################
               
 
@@ -698,7 +425,7 @@ Resources:
     DependsOn:
       - CheckBucketExists
     Type: 'AWS::S3::Bucket'
-    DeletionPolicy: Delete
+    DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub 's3-tool-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}' 
@@ -710,9 +437,10 @@ Resources:
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
             Status: Enabled
-          - Id: ExpirationRule
+          - Id: ExpirationRuleRawLogs
+            Prefix: !FindInMap [ Bucket, Parameters, cloudtraillogcopypath ]
             Status: Enabled
-            ExpirationInDays: 14
+            ExpirationInDays: 1
             NoncurrentVersionExpiration:
                 NoncurrentDays: 1
       NotificationConfiguration:
@@ -824,7 +552,7 @@ Resources:
             Location: !Join ['', ['s3://', !Ref SupportToolBucket, '/', !FindInMap [ Bucket, Parameters, cloudtraillogcopypath ], '/' ]]
             InputFormat: com.amazon.emr.cloudtrail.CloudTrailInputFormat
             OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-            Compressed: False
+            Compressed: true
             StoredAsSubDirectories: true
             SerdeInfo:
               SerializationLibrary: org.apache.hive.hcatalog.data.JsonSerDe
@@ -848,7 +576,8 @@ Resources:
       your_s3_logs_bucket: !Sub ${YourS3LogBucket}
       your_s3_log_prefix: !Sub ${YourS3LogBucketPrefix}    
       your_log_type: !Sub ${YourS3LogType}
-      debug_duration: !Ref DebugDuration    
+      log_created_before: !Ref LogObjectCreatedBefore
+      log_created_after: !Ref LogObjectCreatedAfter   
 
   SupportToolLogBatchCopyIAMRole:
     DependsOn:
@@ -888,6 +617,14 @@ Resources:
                   - 'iam:PassRole'
                 Resource: !GetAtt S3BatchOperationsServiceIamRole.Arn
                 Effect: Allow
+              - Action:
+                  - 'lambda:InvokeFunction'
+                Resource: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+                Effect: Allow 
+              - Action:
+                  - 'sns:Publish'
+                Resource: !Ref SupportToolTopic
+                Effect: Allow                                    
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -911,6 +648,8 @@ Resources:
           batch_ops_role: !GetAtt S3BatchOperationsServiceIamRole.Arn
           my_current_region: !Sub ${AWS::Region}
           my_account_id: !Sub ${AWS::AccountId}
+          query_function: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
+          sns_topic_arn: !Ref SupportToolTopic
           s3_access_log_copy_location: !FindInMap
               - Bucket
               - Parameters
@@ -940,10 +679,12 @@ Resources:
           import os
           import boto3
           import time
+          import uuid
           from botocore.exceptions import ClientError
           from botocore.client import Config
           import datetime
           from dateutil.tz import tzlocal
+          from datetime import datetime
 
           # Enable debugging for troubleshooting
           # boto3.set_stream_logger("")
@@ -960,7 +701,11 @@ Resources:
           accountId = str(os.environ['my_account_id'])
           my_s3_access_log_copy_location = str(os.environ['s3_access_log_copy_location'])
           my_cloudtrail_log_copy_location = str(os.environ['cloudtrail_log_copy_location'])
+          query_function_name = str(os.environ['query_function'])
+          my_sns_topic_arn = str(os.environ['sns_topic_arn'])     
 
+          # Other Variables
+          function_invocation_type = 'RequestResponse'            
 
           # Specify variables #############################
 
@@ -975,7 +720,6 @@ Resources:
 
 
           # Construct ARNs
-
           report_bucket_arn = 'arn:aws:s3:::' + report_bucket_name
           target_resource_arn = 'arn:aws:s3:::' + report_bucket_name
 
@@ -986,12 +730,38 @@ Resources:
 
           # Initiate Service Clients ###################
           s3ControlClient = boto3.client('s3control', region_name=my_region)
+          lambdaClient = boto3.client('lambda', region_name=my_region)
+          sns = boto3.client('sns', region_name=my_region)
 
+          
+          # SNS Message Function
+          def send_sns_message(sns_topic_arn, sns_message):
+              logger.info("Sending SNS Notification Message......")
+              sns_subject = 'Notification from AWS Support Troubleshooting Tool'
+              try:
+                  response = sns.publish(TopicArn=sns_topic_arn, Message=sns_message, Subject=sns_subject)
+              except ClientError as e:
+                  logger.error(e)
+
+
+          # Function to Invoke Copy Function Worker
+          def invoke_function(function_name, invocation_type, payload):
+              invoke_response = lambdaClient.invoke(
+                  FunctionName=function_name,
+                  InvocationType=invocation_type,
+                  Payload=payload,
+
+              )
+              response_payload = json.loads(invoke_response['Payload'].read().decode("utf-8"))
+              return response_payload                 
 
 
           # S3 Batch Copy Function
 
-          def s3_batch_ops_copy_manifest_generator(target_key_prefix, source_bucket_arn, source_bucket_prefix, debug_start_days):
+          def s3_batch_ops_copy_manifest_generator(target_key_prefix, source_bucket_arn, source_bucket_prefix, obj_created_before_string, obj_created_after_string):
+              # Convert input date to datetime format
+              debug_start_days = datetime.strptime(obj_created_after_string, '%Y-%m-%d')
+              # Initiate Batch Operations Request parameters          
               my_request_kwargs = {
                   'AccountId': accountId,
                   'ConfirmationRequired': False,
@@ -1040,10 +810,17 @@ Resources:
               }
 
               logger.info(my_request_kwargs)
+              # Include Source Bucket Prefix if specified
               if source_bucket_prefix:
                   my_request_kwargs['ManifestGenerator']['S3JobManifestGenerator']['Filter']['KeyNameConstraint'] = {
                       'MatchAnyPrefix': [source_bucket_prefix, ]}
                   logger.info(f"Source Prefix is present, modified request kwargs to: {my_request_kwargs}")
+
+              # Include Created before time if specified
+              # Convert date string to date time:
+              if obj_created_before_string:
+                  obj_created_before = datetime.strptime(obj_created_before_string, '%Y-%m-%d')
+                  my_request_kwargs['ManifestGenerator']['S3JobManifestGenerator']['Filter']['CreatedBefore'] = obj_created_before                  
 
               try:
                   logger.info(f"Submitting kwargs to S3 Batch Operations: {my_request_kwargs}")
@@ -1054,6 +831,7 @@ Resources:
                   return response['JobId']
               except ClientError as e:
                   logger.error(e)
+                  raise e
 
 
           def lambda_handler(event, context):
@@ -1063,12 +841,10 @@ Resources:
               my_logs_bucket = event.get('ResourceProperties').get('your_s3_logs_bucket')
               my_log_prefix = event.get('ResourceProperties').get('your_s3_log_prefix')
               my_log_type = event.get('ResourceProperties').get('your_log_type')
+              my_log_created_before = event.get('ResourceProperties').get('log_created_before')
+              my_log_created_after = event.get('ResourceProperties').get('log_created_after')                           
               logger.info(f"my_log_prefix is {my_log_prefix}")
               
-              # Set Debug number of days
-              offset_days = int(event.get('ResourceProperties').get('debug_duration'))
-              my_debug_start_days = datetime.datetime.now().replace(tzinfo=tzlocal()) - datetime.timedelta(offset_days)
-
               # Set Copy destination depending on Log Type
               if my_log_type == 'CloudTrail':
                   my_copy_destination = my_cloudtrail_log_copy_location
@@ -1085,9 +861,10 @@ Resources:
                   try:
                       logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
                       # Introduce a delay to allow consistency
-                      time.sleep(150)
-                      s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_debug_start_days)
-                      # check_bucket_exists(s3Bucket)
+                      # sleep is included intentionally
+                      # nosemgrep: arbitrary-sleep
+                      time.sleep(150)  # nosemgrep: arbitrary-sleep
+                      s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_log_created_before, my_log_created_after)
                       responseData = {}
                       responseData['message'] = "Successful"
                       logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
@@ -1099,26 +876,64 @@ Resources:
                       failure_reason = str(e)
                       logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
                       cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
-
 
               elif event.get('RequestType') == 'Update':
                   # logger.info(event)
-                  try:
-                      logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
-                      s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_debug_start_days)
-                      # check_bucket_exists(s3Bucket)
-                      responseData = {}
-                      responseData['message'] = "Successful"
-                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-                  except Exception as e:
-                      logger.error(e)
-                      responseData = {}
-                      responseData['message'] = str(e)
-                      failure_reason = str(e)
-                      logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+                  # Get details of the previous parameter values
+                  previous_my_log_created_after = event.get('OldResourceProperties').get('log_created_after')
+                  previous_my_log_created_before = event.get('OldResourceProperties').get('log_created_before')
+                  logger.info(f"previous_my_log_created_after is: {previous_my_log_created_after}")
+                  logger.info(f"previous_my_log_created_before is: {previous_my_log_created_before}")
+                  # Convert from string to datetime and selectively perform a copy
+                  current_after_date = datetime.strptime(my_log_created_after, '%Y-%m-%d')
+                  current_before_date = datetime.strptime(my_log_created_before, '%Y-%m-%d')
+                  old_after_date = datetime.strptime(previous_my_log_created_after, '%Y-%m-%d')
+                  old_before_date = datetime.strptime(previous_my_log_created_before, '%Y-%m-%d')
+                  # Initiate Batch Operations copy only if the logs files are not already included in previous copy
+                  if current_after_date < old_after_date or current_before_date > old_before_date:
+                      # Initiate Batch Operations copy
+                      logger.info(f"The current CreatedAfterDate is earlier than the existing one Or CreatedBeforeDate is later Initiate BOPs Job...")
+                      try:
+                          logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
+                          s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_log_created_before, my_log_created_after)
+                          responseData = {}
+                          responseData['message'] = "Successful"
+                          logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                      except Exception as e:
+                          logger.error(e)
+                          responseData = {}
+                          responseData['message'] = str(e)
+                          failure_reason = str(e)
+                          logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                          cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+                  else:
+                      # We are Skipping Copying objects with S3 Batch Operations, but we need to run an Athena query
+                      try:
+                        logger.info("Stack event Update, Starting Athena Query Workflow...")
+                        # Starting Athena Query Workflow
+                        my_sns_message = f'Starting Athena Query'
+                        logger.info(f"{my_sns_message}")
+                        # Start Athena Query Function Invoke
+                        # Generate Payload for Invocation:
+                        my_payload = {"my_etag": str(uuid.uuid4()) }
+                        my_payload_json = json.dumps(my_payload)                                  
+                        send_sns_message(my_sns_topic_arn, my_sns_message)
+                        # Start Athena Query Function Invoke
+                        invoke_query_funct = invoke_function(query_function_name, function_invocation_type, my_payload_json)
+                        logger.info(invoke_query_funct)    
 
+                        responseData = {}
+                        responseData['message'] = "Successful"
+                        logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                      except Exception as e:
+                        logger.error(e)
+                        responseData = {}
+                        responseData['message'] = str(e)
+                        failure_reason = str(e) 
+                        logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                        cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
 
               elif event.get('RequestType') == 'Delete':
                   logger.info(event)
@@ -1766,7 +1581,8 @@ Resources:
       Timeout: 180
       Environment:
         Variables:
-          query_duration: !Ref DebugDuration
+          query_logs_before: !Ref LogObjectCreatedBefore
+          query_logs_after: !Ref LogObjectCreatedAfter
           workgroup_name: !Sub 'wkgrp-${StackNametoLower.change_to_lower}'
           glue_tbl: !Sub 'support-tbl-${StackNametoLower.change_to_lower}'
           glue_db: !Sub 'support-db-${StackNametoLower.change_to_lower}'
@@ -1799,15 +1615,15 @@ Resources:
             my_glue_tbl = str(os.environ['glue_tbl'])
             my_workgroup_name = str(os.environ['workgroup_name'])
             my_s3_bucket = str(os.environ['s3_bucket'])
-            my_query_duration = int(os.environ['query_duration'])
             my_query_analysis_type = str(os.environ['query_analysis_type'])
+            my_query_logs_before = str(os.environ['query_logs_before'])
+            my_query_logs_after = str(os.environ['query_logs_after'])            
 
 
             my_current_date = datetime.datetime.now().date()
-            # retain_date = datetime.datetime.now().date() + datetime.timedelta(num_days) + datetime.timedelta(safety_margin)
 
-            logger.info(f'my_current_date is: {my_current_date}')
-            logger.info(f'my_query_duration is: {my_query_duration}')
+            logger.info(f'my_query_logs_before is: {my_query_logs_before}')
+            logger.info(f'my_query_logs_after is: {my_query_logs_after}')
 
 
             # Set Service Client
@@ -1841,6 +1657,61 @@ Resources:
 
                 match my_query_analysis_type:
 
+                    case "ObjectAccess":
+                        logger.info("ObjectAccess") 
+                        if my_s3_bucket:
+                            my_query_string = f"""                    
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage, 
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
+                            AND
+                            eventName = 'GetObject'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z';
+                            """                           
+                        else:
+                            my_query_string = f"""                    
+                            SELECT
+                            eventTime, 
+                            eventName, 
+                            eventSource, 
+                            sourceIpAddress, 
+                            userAgent, 
+                            awsregion,
+                            json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                            json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                            userIdentity.arn as userArn,
+                            userIdentity.accountId,
+                            errorCode,
+                            errorMessage, 
+                            requestId,
+                            requestParameters,
+                            additionaleventdata
+                            FROM "{my_glue_db}"."{my_glue_tbl}" 
+                            WHERE eventsource = 's3.amazonaws.com'
+                            AND
+                            eventName = 'GetObject'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;
+                            """                         
+
                     case "AnonymousAccess":
                         logger.info("AnonymousAccess") 
                         if my_s3_bucket:
@@ -1865,8 +1736,10 @@ Resources:
                             WHERE eventsource = 's3.amazonaws.com'
                             AND
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
-                            and
-                            userIdentity.accountId = 'anonymous';
+                            AND
+                            userIdentity.accountId = 'anonymous'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ; 
                             """                           
                         else:
                             my_query_string = f"""                    
@@ -1888,8 +1761,10 @@ Resources:
                             additionaleventdata
                             FROM "{my_glue_db}"."{my_glue_tbl}" 
                             WHERE eventsource = 's3.amazonaws.com'
-                            and
-                            userIdentity.accountId = 'anonymous';
+                            AND
+                            userIdentity.accountId = 'anonymous'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """         
 
                     case "CreateBucket":
@@ -1913,8 +1788,10 @@ Resources:
                             WHERE eventsource = 's3.amazonaws.com'
                             AND
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
-                            and
-                            eventname = 'CreateBucket';
+                            AND
+                            eventname = 'CreateBucket'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                           
                         else:
                             my_query_string = f"""
@@ -1934,7 +1811,9 @@ Resources:
                             FROM "{my_glue_db}"."{my_glue_tbl}" 
                             WHERE eventsource = 's3.amazonaws.com'
                             and
-                            eventname = 'CreateBucket';
+                            eventname = 'CreateBucket'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                                                       
 
                     case "DeleteBucket-*":
@@ -1959,7 +1838,9 @@ Resources:
                             AND
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
                             and
-                            eventname like 'DeleteBucket%';
+                            eventname like 'DeleteBucket%'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                                
                         else:
                             my_query_string = f"""
@@ -1979,7 +1860,9 @@ Resources:
                             FROM "{my_glue_db}"."{my_glue_tbl}"  
                             WHERE eventsource = 's3.amazonaws.com'
                             and
-                            eventname like 'DeleteBucket%';
+                            eventname like 'DeleteBucket%'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                        
 
                     case "PutBucket-*":
@@ -2004,7 +1887,9 @@ Resources:
                             AND
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                  
                             and
-                            eventname like 'PutBucket%';
+                            eventname like 'PutBucket%'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """  
                         else:
                             my_query_string = f"""
@@ -2024,7 +1909,9 @@ Resources:
                             FROM "{my_glue_db}"."{my_glue_tbl}"
                             WHERE eventsource = 's3.amazonaws.com'               
                             and
-                            eventname like 'PutBucket%';
+                            eventname like 'PutBucket%'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                                                              
                                             
                     case "DeleteObject-*":
@@ -2050,7 +1937,9 @@ Resources:
                             AND
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'
                             AND
-                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') 
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """  
                         else:
                             my_query_string = f"""
@@ -2071,7 +1960,9 @@ Resources:
                             FROM "{my_glue_db}"."{my_glue_tbl}"
                             WHERE eventsource = 's3.amazonaws.com'
                             AND
-                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                            (eventname = 'DeleteObject' or eventname like 'DeleteObject%') 
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                                      
 
                     case "AccessDenied":
@@ -2100,6 +1991,8 @@ Resources:
                             json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                            
                             AND
                             errorCode = 'AccessDenied'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """                           
                         else:
                             my_query_string = f"""
@@ -2123,6 +2016,8 @@ Resources:
                             WHERE eventsource = 's3.amazonaws.com'
                             AND
                             errorCode = 'AccessDenied'
+                            AND
+                            eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                             """   
 
                     case _:

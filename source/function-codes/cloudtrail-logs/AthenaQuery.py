@@ -21,15 +21,15 @@ my_glue_db = str(os.environ['glue_db'])
 my_glue_tbl = str(os.environ['glue_tbl'])
 my_workgroup_name = str(os.environ['workgroup_name'])
 my_s3_bucket = str(os.environ['s3_bucket'])
-my_query_duration = int(os.environ['query_duration'])
 my_query_analysis_type = str(os.environ['query_analysis_type'])
+my_query_logs_before = str(os.environ['query_logs_before'])
+my_query_logs_after = str(os.environ['query_logs_after'])            
 
 
 my_current_date = datetime.datetime.now().date()
-# retain_date = datetime.datetime.now().date() + datetime.timedelta(num_days) + datetime.timedelta(safety_margin)
 
-logger.info(f'my_current_date is: {my_current_date}')
-logger.info(f'my_query_duration is: {my_query_duration}')
+logger.info(f'my_query_logs_before is: {my_query_logs_before}')
+logger.info(f'my_query_logs_after is: {my_query_logs_after}')
 
 
 # Set Service Client
@@ -63,6 +63,61 @@ def lambda_handler(event, context):
 
     match my_query_analysis_type:
 
+        case "ObjectAccess":
+            logger.info("ObjectAccess") 
+            if my_s3_bucket:
+                my_query_string = f"""                    
+                SELECT
+                eventTime, 
+                eventName, 
+                eventSource, 
+                sourceIpAddress, 
+                userAgent, 
+                awsregion,
+                json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                userIdentity.arn as userArn,
+                userIdentity.accountId,
+                errorCode,
+                errorMessage, 
+                requestId,
+                requestParameters,
+                additionaleventdata
+                FROM "{my_glue_db}"."{my_glue_tbl}" 
+                WHERE eventsource = 's3.amazonaws.com'
+                AND
+                json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
+                AND
+                eventName = 'GetObject'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z';
+                """                           
+            else:
+                my_query_string = f"""                    
+                SELECT
+                eventTime, 
+                eventName, 
+                eventSource, 
+                sourceIpAddress, 
+                userAgent, 
+                awsregion,
+                json_extract_scalar(requestParameters, '$.bucketName') as bucketName, 
+                json_extract_scalar(requestParameters, '$.key') as objectKey, 
+                userIdentity.arn as userArn,
+                userIdentity.accountId,
+                errorCode,
+                errorMessage, 
+                requestId,
+                requestParameters,
+                additionaleventdata
+                FROM "{my_glue_db}"."{my_glue_tbl}" 
+                WHERE eventsource = 's3.amazonaws.com'
+                AND
+                eventName = 'GetObject'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;
+                """                         
+
         case "AnonymousAccess":
             logger.info("AnonymousAccess") 
             if my_s3_bucket:
@@ -87,8 +142,10 @@ def lambda_handler(event, context):
                 WHERE eventsource = 's3.amazonaws.com'
                 AND
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
-                and
-                userIdentity.accountId = 'anonymous';
+                AND
+                userIdentity.accountId = 'anonymous'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ; 
                 """                           
             else:
                 my_query_string = f"""                    
@@ -110,8 +167,10 @@ def lambda_handler(event, context):
                 additionaleventdata
                 FROM "{my_glue_db}"."{my_glue_tbl}" 
                 WHERE eventsource = 's3.amazonaws.com'
-                and
-                userIdentity.accountId = 'anonymous';
+                AND
+                userIdentity.accountId = 'anonymous'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """         
 
         case "CreateBucket":
@@ -135,8 +194,10 @@ def lambda_handler(event, context):
                 WHERE eventsource = 's3.amazonaws.com'
                 AND
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
-                and
-                eventname = 'CreateBucket';
+                AND
+                eventname = 'CreateBucket'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                           
             else:
                 my_query_string = f"""
@@ -156,7 +217,9 @@ def lambda_handler(event, context):
                 FROM "{my_glue_db}"."{my_glue_tbl}" 
                 WHERE eventsource = 's3.amazonaws.com'
                 and
-                eventname = 'CreateBucket';
+                eventname = 'CreateBucket'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                                                       
 
         case "DeleteBucket-*":
@@ -181,7 +244,9 @@ def lambda_handler(event, context):
                 AND
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                              
                 and
-                eventname like 'DeleteBucket%';
+                eventname like 'DeleteBucket%'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                                
             else:
                 my_query_string = f"""
@@ -201,7 +266,9 @@ def lambda_handler(event, context):
                 FROM "{my_glue_db}"."{my_glue_tbl}"  
                 WHERE eventsource = 's3.amazonaws.com'
                 and
-                eventname like 'DeleteBucket%';
+                eventname like 'DeleteBucket%'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                        
 
         case "PutBucket-*":
@@ -226,7 +293,9 @@ def lambda_handler(event, context):
                 AND
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                  
                 and
-                eventname like 'PutBucket%';
+                eventname like 'PutBucket%'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """  
             else:
                 my_query_string = f"""
@@ -246,7 +315,9 @@ def lambda_handler(event, context):
                 FROM "{my_glue_db}"."{my_glue_tbl}"
                 WHERE eventsource = 's3.amazonaws.com'               
                 and
-                eventname like 'PutBucket%';
+                eventname like 'PutBucket%'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                                                              
                                 
         case "DeleteObject-*":
@@ -272,7 +343,9 @@ def lambda_handler(event, context):
                 AND
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'
                 AND
-                (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                (eventname = 'DeleteObject' or eventname like 'DeleteObject%') 
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """  
             else:
                 my_query_string = f"""
@@ -293,7 +366,9 @@ def lambda_handler(event, context):
                 FROM "{my_glue_db}"."{my_glue_tbl}"
                 WHERE eventsource = 's3.amazonaws.com'
                 AND
-                (eventname = 'DeleteObject' or eventname like 'DeleteObject%') ;
+                (eventname = 'DeleteObject' or eventname like 'DeleteObject%') 
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                                      
 
         case "AccessDenied":
@@ -322,6 +397,8 @@ def lambda_handler(event, context):
                 json_extract_scalar(requestParameters, '$.bucketName') = '{my_s3_bucket}'                            
                 AND
                 errorCode = 'AccessDenied'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """                           
             else:
                 my_query_string = f"""
@@ -345,6 +422,8 @@ def lambda_handler(event, context):
                 WHERE eventsource = 's3.amazonaws.com'
                 AND
                 errorCode = 'AccessDenied'
+                AND
+                eventTime BETWEEN '{my_query_logs_after}T00:00:00Z' and '{my_query_logs_before}T00:00:00Z' ;                            
                 """   
 
         case _:
