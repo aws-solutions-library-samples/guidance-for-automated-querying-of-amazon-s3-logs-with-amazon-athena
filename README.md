@@ -1,4 +1,4 @@
-# Guidance for Automated Querying of Amazon S3 Logs
+# Guidance for Automated Querying of Amazon S3 Logs with Amazon Athena
 
 
 
