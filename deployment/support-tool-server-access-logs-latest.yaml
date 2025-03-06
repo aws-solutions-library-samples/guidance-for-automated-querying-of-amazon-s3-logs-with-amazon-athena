@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  AWS Support Troubleshooting for Amazon S3 - S3 Access Logs
+  AWS Support Troubleshooting for Amazon S3 - S3 Access Logs (SO9007)
 Metadata:
   Version: '1.0.0'
   License:

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  AWS Support Troubleshooting for Amazon S3 - Cloudtrail Data Event Logs
+  AWS Support Troubleshooting for Amazon S3 - Cloudtrail Data Event Logs (SO9007)
 Metadata:
   Version: '1.0.0'
   License:
