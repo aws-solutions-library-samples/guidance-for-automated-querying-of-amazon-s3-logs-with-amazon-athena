@@ -206,6 +206,8 @@ def lambda_handler(event, context):
     elif event.get('RequestType') == 'Update':
         # logger.info(event)
         # Get details of the previous parameter values
+        previous_my_logs_bucket = event.get('OldResourceProperties').get('your_s3_logs_bucket')
+        previous_my_log_prefix = event.get('OldResourceProperties').get('your_s3_log_prefix')        
         previous_my_log_created_after = event.get('OldResourceProperties').get('log_created_after')
         previous_my_log_created_before = event.get('OldResourceProperties').get('log_created_before')
         logger.info(f"previous_my_log_created_after is: {previous_my_log_created_after}")
@@ -216,10 +218,10 @@ def lambda_handler(event, context):
         old_after_date = datetime.strptime(previous_my_log_created_after, '%Y-%m-%d')
         old_before_date = datetime.strptime(previous_my_log_created_before, '%Y-%m-%d')
         # Initiate Batch Operations copy only if the logs files are not already included in previous copy
-        if current_after_date < old_after_date or current_before_date > old_before_date:
+        if current_after_date < old_after_date or current_before_date > old_before_date or my_logs_bucket != previous_my_logs_bucket or my_log_prefix != previous_my_log_prefix :
             # Initiate Batch Operations copy
-            logger.info(f"The current CreatedAfterDate is earlier than the existing one Or CreatedBeforeDate is later Initiate BOPs Job...")
-            try:
+            logger.info(f"The current CreatedAfterDate Or CreatedBeforeDate or  S3 Logs Bucket or S3 Logs Prefix has been modified. Now Initiate BOPs Job...")
+            try:  
                 logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
                 s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_log_created_before, my_log_created_after)
                 responseData = {}

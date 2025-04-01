@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: >-
   AWS Support Troubleshooting for Amazon S3 - S3 Access Logs (SO9007)
 Metadata:
-  Version: '1.0.0'
+  Version: '1.0.1'
   License:
     Description: >-
       'MIT No Attribution
@@ -584,7 +584,9 @@ Resources:
       your_s3_log_prefix: !Sub ${YourS3LogBucketPrefix}    
       your_log_type: !Sub ${YourS3LogType}
       log_created_before: !Ref LogObjectCreatedBefore
-      log_created_after: !Ref LogObjectCreatedAfter    
+      log_created_after: !Ref LogObjectCreatedAfter
+      analysis_type: !Ref AnalysisType
+      prod_bucket: !Ref YourProductionS3Bucket          
 
   SupportToolLogBatchCopyIAMRole:
     DependsOn:
@@ -890,6 +892,8 @@ Resources:
               elif event.get('RequestType') == 'Update':
                   # logger.info(event)
                   # Get details of the previous parameter values
+                  previous_my_logs_bucket = event.get('OldResourceProperties').get('your_s3_logs_bucket')
+                  previous_my_log_prefix = event.get('OldResourceProperties').get('your_s3_log_prefix')        
                   previous_my_log_created_after = event.get('OldResourceProperties').get('log_created_after')
                   previous_my_log_created_before = event.get('OldResourceProperties').get('log_created_before')
                   logger.info(f"previous_my_log_created_after is: {previous_my_log_created_after}")
@@ -900,9 +904,9 @@ Resources:
                   old_after_date = datetime.strptime(previous_my_log_created_after, '%Y-%m-%d')
                   old_before_date = datetime.strptime(previous_my_log_created_before, '%Y-%m-%d')
                   # Initiate Batch Operations copy only if the logs files are not already included in previous copy
-                  if current_after_date < old_after_date or current_before_date > old_before_date:
+                  if current_after_date < old_after_date or current_before_date > old_before_date or my_logs_bucket != previous_my_logs_bucket or my_log_prefix != previous_my_log_prefix :
                       # Initiate Batch Operations copy
-                      logger.info(f"The current CreatedAfterDate is earlier than the existing one Or CreatedBeforeDate is later Initiate BOPs Job...")
+                      logger.info(f"The current CreatedAfterDate Or CreatedBeforeDate or  S3 Logs Bucket or S3 Logs Prefix has been modified. Now Initiate BOPs Job...")
                       try:
                           logger.info("Stack event is Create or Update. Initiating Logs copy to SupportToolBucket...")
                           s3_batch_ops_copy_manifest_generator(my_copy_destination, my_logs_bucket_arn, my_log_prefix, my_log_created_before, my_log_created_after)
@@ -1344,172 +1348,6 @@ Resources:
 
 
 ################################################# Code Ends ####################################################
-
-################################ Second Lambda to Initiate Athena Query #######################
-
-  StartAthenaQuery:
-    DependsOn:
-      - CheckBucketExists
-    Type: Custom::InvokeCustomLambda
-    Properties:
-      ServiceToken: !GetAtt S3SupportToolStartAthenaQuery.Arn
-      analysis_type: !Ref AnalysisType
-      prod_bucket: !Ref YourProductionS3Bucket     
-
-
-  S3SupportToolStartAthenaQueryIAMRole:
-    DependsOn:
-      - CheckBucketExists   
-    Type: 'AWS::IAM::Role'
-    Properties:
-      Policies:
-        - PolicyName: AWSLambdaBasicExecutionRole
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'                  
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
-                Effect: Allow      
-        - PolicyName: GrantFunctioAdditionalPerm
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Action:
-                  - 'lambda:InvokeFunction'
-                Resource: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
-                Effect: Allow        
-              - Action:
-                  - 'sns:Publish'
-                Resource: !Ref SupportToolTopic
-                Effect: Allow
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: 'sts:AssumeRole'
-
-
-
-  S3SupportToolStartAthenaQuery:
-    DependsOn:
-      - CheckBucketExists   
-    Type: 'AWS::Lambda::Function'
-    Properties:
-      Architectures:
-        - arm64    
-      Environment:
-        Variables:
-          my_account_id: !Sub ${AWS::AccountId}
-          query_function: !GetAtt S3SupportToolAthenaQueryLambdaFunction.Arn
-          sns_topic_arn: !Ref SupportToolTopic
-      Handler: index.lambda_handler
-      Role: !GetAtt S3SupportToolStartAthenaQueryIAMRole.Arn
-      Runtime: python3.11
-      Timeout: 300
-      Code:
-        ZipFile: |
-          import json
-          import cfnresponse
-          import boto3
-          import botocore
-          import os
-          import logging
-          import datetime
-          import uuid
-          from botocore.exceptions import ClientError
-          from urllib import parse
-
-          # Set up logging
-          logger = logging.getLogger(__name__)
-          logger.setLevel('INFO')
-
-          # Initiate Variables
-
-          # Lambda Environment Variables
-          accountId = str(os.environ['my_account_id'])
-          my_region = str(os.environ['AWS_REGION'])
-          query_function_name = str(os.environ['query_function'])
-          my_sns_topic_arn = str(os.environ['sns_topic_arn'])     
-
-          # Other Variables
-          function_invocation_type = 'RequestResponse'          
-
-          # Create Service Clients
-          s3ControlClient = boto3.client('s3control', region_name=my_region)
-          s3Client = boto3.client('s3', region_name=my_region)
-          lambdaClient = boto3.client('lambda', region_name=my_region)
-          sns = boto3.client('sns', region_name=my_region)
-
-          
-          # SNS Message Function
-          def send_sns_message(sns_topic_arn, sns_message):
-              logger.info("Sending SNS Notification Message......")
-              sns_subject = 'Notification from AWS Support Troubleshooting Tool'
-              try:
-                  response = sns.publish(TopicArn=sns_topic_arn, Message=sns_message, Subject=sns_subject)
-              except ClientError as e:
-                  logger.error(e)
-
-
-          # Function to Invoke Copy Function Worker
-          def invoke_function(function_name, invocation_type, payload):
-              invoke_response = lambdaClient.invoke(
-                  FunctionName=function_name,
-                  InvocationType=invocation_type,
-                  Payload=payload,
-
-              )
-              response_payload = json.loads(invoke_response['Payload'].read().decode("utf-8"))
-              return response_payload        
-
-
-          def lambda_handler(event, context):
-              logger.info(event)
-
-              # Start Cloudformation Invocation #
-              if event.get('RequestType') == 'Update':
-                # logger.info(event)
-                try:
-                  logger.info("Stack event Update, Starting Athena Query Workflow...")
-                  # Starting Athena Query Workflow
-                  my_sns_message = f'Starting Athena Query'
-                  logger.info(f"{my_sns_message}")
-                  # Start Athena Query Function Invoke
-                  # Generate Payload for Invocation:
-                  my_payload = {"my_etag": str(uuid.uuid4()) }
-                  my_payload_json = json.dumps(my_payload)                                  
-                  send_sns_message(my_sns_topic_arn, my_sns_message)
-                  # Start Athena Query Function Invoke
-                  invoke_query_funct = invoke_function(query_function_name, function_invocation_type, my_payload_json)
-                  logger.info(invoke_query_funct)    
-
-                  responseData = {}
-                  responseData['message'] = "Successful"
-                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-                except Exception as e:
-                  logger.error(e)
-                  responseData = {}
-                  responseData['message'] = str(e)
-                  failure_reason = str(e) 
-                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
-
-              else:
-                logger.info(f"Stack event is Delete or Create, nothing to do....")
-                responseData = {}
-                responseData['message'] = "Completed"
-                logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
-                cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)  
-
-  
-
-##################################### Code Ends  ######################################################
 
 
 
