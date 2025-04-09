@@ -146,6 +146,20 @@ There are costs associated with using this solution. The solution uses several A
 
 Please refer to the pricing pages of these services for detailed cost information. The actual cost will depend on the volume of logs processed and the frequency of analysis.
 
+***Sample Cost:***
+
+Cost for running 3 different queries, over different time ranges and prefix. This shows the cost for Amazon Athena queries, Amazon SNS notifications, Batch Operations jobs (3 jobs, 1,870 objects), Lambda invocation and Amazon S3 API and storage cost for the solution bucket
+
+
+|Service	|Athena($)	|S3($)	|Lambda($)	|SNS($)	|Total costs($)	|
+|---	|---	|---	|---	|---	|---	|
+|Service total	|0.03909	|0.01777	|0	|0	|0.05686	|
+|4/1/2025	|0.01305	|0.51429	|0	|0	|0.52734	|
+|4/2/2025	|0.02604	|0.26355	|0	|0	|0.28959	|
+|4/3/2025	|	|0.00194	|	|	|0.00194	|
+
+
+
 <a name="4-prerequisites"></a>
 ## 4. Prerequisites
 
