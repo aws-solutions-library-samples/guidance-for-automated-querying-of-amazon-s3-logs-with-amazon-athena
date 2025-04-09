@@ -148,7 +148,7 @@ Please refer to the pricing pages of these services for detailed cost informatio
 
 ***Sample Cost:***
 
-Cost for running 3 different queries, over different time ranges and prefix. This shows the cost for Amazon Athena queries, Amazon SNS notifications, Batch Operations jobs (3 jobs, 1,870 objects), Lambda invocation and Amazon S3 API and storage cost for the solution bucket
+Cost for running 3 different queries, over different time ranges and prefix. This shows the cost for Amazon Athena queries, Amazon SNS notifications, Batch Operations jobs (3 jobs), Lambda invocation and Amazon S3 API and storage cost for the solution bucket
 
 
 |Service	|Athena($)	|S3($)	|Lambda($)	|SNS($)	|Total costs($)	|
